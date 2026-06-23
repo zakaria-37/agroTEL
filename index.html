@@ -1635,7 +1635,7 @@ var alertCooldown={temp:0,soil:0};
 ══════════════════════════════════ */
 /* ══ BACKEND API ══ */
 var API = window.location.origin;   // http://localhost:5050
-var authToken = localStorage.getItem('sf_token') || null;
+var authToken = localStorage.getItem('agrotel_token') || localStorage.getItem('sf_token') || null;
 var currentUser = null;
 var selectedRole = 'admin';
 
@@ -1663,7 +1663,7 @@ window.addEventListener('DOMContentLoaded', function () {
       if (data.error || !data.username) {
         /* Token invalide → rester sur la page login */
         authToken = null;
-        localStorage.removeItem('sf_token');
+        localStorage.removeItem('agrotel_token'); localStorage.removeItem('sf_token');
         return;
       }
       /* Token valide → connecter automatiquement */
@@ -1747,7 +1747,7 @@ function doLogin() {
     }
     clearTimeout(timer);
     authToken = data.token;
-    localStorage.setItem('sf_token', authToken);
+    localStorage.setItem('agrotel_token', authToken);
     localStorage.setItem('sf_lastuser', JSON.stringify({username: data.username, role: data.role}));
     loginSuccess(data.username, data.role, '🌐 SERVEUR', data.token);
   })
@@ -1767,7 +1767,7 @@ function doLogin() {
 
 function loginSuccess(username, role, mode, token) {
   authToken = token;
-  if (token) localStorage.setItem('sf_token', token);
+  if (token) localStorage.setItem('agrotel_token', token);
   localStorage.setItem('sf_lastuser', JSON.stringify({ username: username, role: role }));
   currentUser = {
     username: username, role: role,
@@ -1803,6 +1803,8 @@ function applyLogin() {
     window._chatPersistenceActive = true;
     setTimeout(initChatPersistence, 400);
   }
+  // ✅ Démarrer le polling PIR maintenant qu'on a un token
+  if (typeof demarrerPollPIR === 'function') demarrerPollPIR();
 }
 
 function doLogout() {
@@ -1831,9 +1833,12 @@ function doLogout() {
     }
   }
   window._chatPersistenceActive = false; // ← reset guard pour le prochain login
+  // Arrêter le polling PIR à la déconnexion
+  if (intervalPIR) { clearInterval(intervalPIR); intervalPIR = null; }
+  dernierIdAlerte = 0;
   authToken = null;
   currentUser = null;
-  localStorage.removeItem('sf_token');
+  localStorage.removeItem('agrotel_token'); localStorage.removeItem('sf_token');
   localStorage.removeItem('sf_lastuser');
   /* ✅ Réinitialiser le chat pour le prochain utilisateur */
   chatHistory = [];
@@ -1867,7 +1872,7 @@ function checkExistingSession() {
   fetch(API + '/api/stats', { headers: apiHeaders() })
   .then(function(r){
     if (r.status === 401) {
-      authToken = null; localStorage.removeItem('sf_token');
+      authToken = null; localStorage.removeItem('agrotel_token'); localStorage.removeItem('sf_token');
     }
   }).catch(function(){});
 }
@@ -3473,7 +3478,7 @@ function fermerSecuritePanel() {
 }
 
 function chargerAlertesPIR() {
-  var token = localStorage.getItem('sf_token');
+  var token = localStorage.getItem('agrotel_token') || localStorage.getItem('agrotel_token') || localStorage.getItem('sf_token');
   if (!token) return;
 
   fetch('/api/alertes-securite', {
@@ -3494,7 +3499,8 @@ function chargerAlertesPIR() {
         // Nouvelle alerte — afficher badge et notification
         var badge = document.getElementById('sec-badge');
         badge.style.display = 'block';
-        badge.textContent = alertes.filter(function(a){ return a.id > dernierIdAlerte; }).length;
+        var nb = alertes.filter(function(a){ return a.id > dernierIdAlerte; }).length;
+        badge.textContent = nb;
         afficherNotifIntrusion(alertes[0]);
       }
       dernierIdAlerte = alertes[0].id;
@@ -3504,7 +3510,6 @@ function chargerAlertesPIR() {
     var liste = document.getElementById('sec-list');
     if (alertes.length === 0) {
       liste.innerHTML = '<div style="font-family:var(--mono);font-size:11px;color:var(--text3);text-align:center;padding:30px 0;">✅ Aucune intrusion détectée</div>';
-      // Cacher bouton tout supprimer si liste vide
       var delAllBtn = document.getElementById('sec-del-all-btn');
       if (delAllBtn) delAllBtn.style.display = 'none';
       return;
@@ -3526,7 +3531,6 @@ function chargerAlertesPIR() {
         'background:rgba(192,57,43,0.08);border:1px solid rgba(192,57,43,0.25);' +
         'border-radius:8px;padding:10px 12px;margin-bottom:8px;' +
         'transition:background .2s;">' +
-        // Ligne titre + badge photo + bouton supprimer
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">' +
           '<div style="display:flex;align-items:center;gap:7px;cursor:pointer;" ' +
             'onclick="voirPhotoAlerte(' + a.id + ',\'' + ts + '\',\'' + (a.cam_ip||'?') + '\')">' +
@@ -3549,7 +3553,6 @@ function chargerAlertesPIR() {
               'title="Supprimer cette alerte">🗑</button>' : '') +
           '</div>' +
         '</div>' +
-        // Détails
         '<div style="font-family:var(--mono);font-size:10px;color:var(--text3);display:grid;grid-template-columns:1fr 1fr;gap:3px;cursor:pointer;" ' +
           'onclick="voirPhotoAlerte(' + a.id + ',\'' + ts + '\',\'' + (a.cam_ip||'?') + '\')">' +
           '<span>📅 ' + date + '</span>' +
@@ -3567,7 +3570,7 @@ function chargerAlertesPIR() {
 }
 
 function voirPhotoAlerte(id, timestamp, camIp) {
-  var token = localStorage.getItem('sf_token');
+  var token = localStorage.getItem('agrotel_token') || localStorage.getItem('agrotel_token') || localStorage.getItem('sf_token');
   if (!token) return;
 
   var modal = document.getElementById('photo-modal');
@@ -3611,7 +3614,7 @@ function fermerPhotoModal() {
 /* ══ SUPPRESSION ALERTE UNIQUE ══ */
 function supprimerAlerteUnique(id) {
   if (!confirm('Supprimer l\'alerte #' + id + ' et sa photo ?')) return;
-  var token = localStorage.getItem('sf_token');
+  var token = localStorage.getItem('agrotel_token') || localStorage.getItem('agrotel_token') || localStorage.getItem('sf_token');
   if (!token) return;
 
   fetch('/api/alertes-securite/' + id, {
@@ -3656,7 +3659,7 @@ function supprimerToutesAlertes() {
   var liste = document.getElementById('sec-list');
   var nb = liste ? liste.querySelectorAll('[id^="alerte-row-"]').length : 0;
   if (!confirm('Supprimer les ' + nb + ' alertes et toutes leurs photos ?\nCette action est irréversible.')) return;
-  var token = localStorage.getItem('sf_token');
+  var token = localStorage.getItem('agrotel_token') || localStorage.getItem('agrotel_token') || localStorage.getItem('sf_token');
   if (!token) return;
 
   fetch('/api/alertes-securite', {
@@ -3710,15 +3713,52 @@ function afficherNotifIntrusion(alerte) {
   } catch(e) {}
 }
 
-// Vérifier nouvelles alertes PIR toutes les 30 secondes
-document.addEventListener('DOMContentLoaded', function() {
+// ══ Polling PIR intelligent — 8 secondes avec endpoint léger ══
+// Utilise /api/alertes-count (retourne juste {total, last_id}) pour éviter
+// de retélécharger toute la liste à chaque poll.
+// Recharge la liste complète uniquement si un nouvel ID est détecté.
+
+function _pollPIR() {
+  var token = localStorage.getItem('agrotel_token') || localStorage.getItem('agrotel_token') || localStorage.getItem('sf_token');
+  if (!token) return;
+
+  fetch('/api/alertes-count', {
+    headers: { 'Authorization': 'Bearer ' + token }
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    var lastId = data.last_id || 0;
+
+    if (dernierIdAlerte === 0) {
+      // Première initialisation — charger la liste complète
+      dernierIdAlerte = lastId;
+      chargerAlertesPIR();
+      return;
+    }
+
+    if (lastId > dernierIdAlerte) {
+      // Nouvelle alerte détectée — recharger la liste complète
+      console.log('[AgroTel] 🚨 Nouvelle alerte PIR détectée (id=' + lastId + ')');
+      chargerAlertesPIR();
+    }
+  })
+  .catch(function() { /* silencieux si hors ligne */ });
+}
+
+function demarrerPollPIR() {
+  // Réinitialiser pour ce nouvel utilisateur
+  dernierIdAlerte = 0;
+  if (intervalPIR) { clearInterval(intervalPIR); intervalPIR = null; }
+  // Petit délai pour laisser le token s'établir
   setTimeout(function() {
-    // Charger une première fois pour initialiser dernierIdAlerte
-    chargerAlertesPIR();
-    // Puis vérifier régulièrement
-    intervalPIR = setInterval(chargerAlertesPIR, 30000);
-  }, 3000);
-});
+    _pollPIR();
+    intervalPIR = setInterval(_pollPIR, 8000);
+    console.log('[AgroTel] 👁️ Polling PIR démarré (8s)');
+  }, 1500);
+}
+
+// Le polling PIR est démarré dans applyLogin() après connexion
+// (voir démarrerPollPIR() appelée dans applyLogin)
 
 // Fermer modal photo avec Escape
 document.addEventListener('keydown', function(e) {
@@ -3794,7 +3834,7 @@ function paAnalyser() {
     paSetResult('⚠️ Veuillez d\'abord sélectionner ou prendre une photo.', 'warn');
     return;
   }
-  var token = localStorage.getItem('sf_token');
+  var token = localStorage.getItem('agrotel_token') || localStorage.getItem('sf_token');
   if (!token) {
     paSetResult('⚠️ Connectez-vous pour utiliser cette fonctionnalité.', 'warn');
     return;
