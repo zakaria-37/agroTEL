@@ -5,8 +5,8 @@
 
 var ChatStorage = (function () {
 
-  var KEY_PREFIX  = 'sf_chat_';
-  var META_PREFIX = 'sf_chatmeta_';
+  var KEY_PREFIX  = 'agrotel_chat_';
+  var META_PREFIX = 'agrotel_chatmeta_';
   var MAX_MESSAGES = 200;
   var MAX_HISTORY  = 50;
 
