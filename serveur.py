@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════╗
-║   Smart Farm — Serveur Backend Complet           ║
+║   AgroTel — Serveur Backend Complet              ║
 ║   Base de données SQLite + Login + Capteurs      ║
 ╚══════════════════════════════════════════════════╝
 
@@ -57,7 +57,7 @@ SEUIL_SOL_SEC  = 200    # /1024  alerte sol trop sec
 # ════════════════════════════════════════════
 MQTT_BROKER = "broker.hivemq.com"
 MQTT_PORT   = 1883
-MQTT_CLIENT_ID = "SmartFarm_Serveur"
+MQTT_CLIENT_ID = "AgroTel_Serveur"
 
 # ════════════════════════════════════════════
 
@@ -344,6 +344,34 @@ class Handler(BaseHTTPRequestHandler):
             if not sess: return
             self._json({"username": sess["username"], "role": sess["role"]})
 
+        # Alertes sécurité PIR — compteur léger pour polling temps réel
+        elif path == "/api/alertes-count":
+            if not self._auth(): return
+            con = get_db()
+            row = con.execute(
+                "SELECT COUNT(*) as total, MAX(id) as last_id FROM alertes_securite"
+            ).fetchone()
+            con.close()
+            self._json({"total": row["total"], "last_id": row["last_id"] or 0})
+
+        # Alertes sécurité PIR — nouvelles depuis un ID donné (polling incrémental)
+        elif path.startswith("/api/alertes-since/"):
+            if not self._auth(): return
+            try:
+                since_id = int(path.split("/")[-1])
+            except ValueError:
+                return self._json({"error": "ID invalide"}, 400)
+            con = get_db()
+            rows = con.execute("""
+                SELECT id, timestamp, cam_ip,
+                       CASE WHEN photo IS NOT NULL THEN 1 ELSE 0 END as has_photo
+                FROM alertes_securite
+                WHERE id > ?
+                ORDER BY timestamp DESC LIMIT 20
+            """, (since_id,)).fetchall()
+            con.close()
+            self._json({"alertes": [dict(r) for r in rows], "count": len(rows)})
+
         # Alertes sécurité PIR (dernières 50)
         elif path == "/api/alertes-securite":
             if not self._auth(): return
@@ -519,7 +547,8 @@ class Handler(BaseHTTPRequestHandler):
             con.commit()
             con.close()
 
-            print(f"  🚨 INTRUSION détectée ! cam={cam_ip}")
+            has_photo = photo_bytes is not None
+            print(f"  🚨 INTRUSION détectée ! cam={cam_ip} | alerte_id={alerte_id} | photo={'OUI (' + str(len(photo_bytes)) + ' bytes)' if has_photo else 'NON'}")
 
             # Envoyer email alerte sécurité dans un thread
             threading.Thread(
@@ -672,7 +701,7 @@ class Handler(BaseHTTPRequestHandler):
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {GROQ_API_KEY}",
                     "HTTP-Referer": "http://localhost:5050",
-                    "X-Title": "SmartFarm"
+                    "X-Title": "AgroTel"
                 }
             )
             with urllib.request.urlopen(req, timeout=20) as r:
@@ -748,7 +777,7 @@ Réponds UNIQUEMENT en français avec ce format exact :
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {GROQ_API_KEY}",
                     "HTTP-Referer": "http://localhost:5050",
-                    "X-Title": "SmartFarm"
+                    "X-Title": "AgroTel"
                 }
             )
             with urllib.request.urlopen(req, timeout=30) as r:
@@ -774,13 +803,19 @@ Réponds UNIQUEMENT en français avec ce format exact :
 # Garde en mémoire les alertes envoyées (évite spam)
 # format: { "type_alerte": timestamp_dernier_envoi }
 alertes_envoyees = {}
-COOLDOWN_ALERTE = 1 * 60   # 30 minutes entre 2 alertes du même type
+COOLDOWN_CAPTEURS = 5 * 60    # 5 min entre 2 alertes capteurs (temp/hum/sol)
+COOLDOWN_PIR      = 2 * 60    # 2 min entre 2 emails PIR intrusion
 
 def peut_envoyer_alerte(type_alerte):
-    """Vérifie si on peut envoyer cette alerte (cooldown 30min)."""
+    """Vérifie si on peut envoyer cette alerte selon son cooldown propre."""
     maintenant = time.time()
     dernier = alertes_envoyees.get(type_alerte, 0)
-    if maintenant - dernier > COOLDOWN_ALERTE:
+    # Cooldown selon le type
+    if type_alerte == "pir_intrusion":
+        cooldown = COOLDOWN_PIR
+    else:
+        cooldown = COOLDOWN_CAPTEURS
+    if maintenant - dernier > cooldown:
         alertes_envoyees[type_alerte] = maintenant
         return True
     return False
@@ -793,7 +828,7 @@ def envoyer_email(sujet, corps_html):
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = sujet
-        msg["From"]    = f"Smart Farm 🌿 <{EMAIL_EXPEDITEUR}>"
+        msg["From"]    = f"AgroTel <{EMAIL_EXPEDITEUR}>"
         msg["To"]      = ", ".join(EMAIL_DESTINATAIRES)
         msg.attach(MIMEText(corps_html, "html", "utf-8"))
 
@@ -814,20 +849,21 @@ def envoyer_email_securite(cam_ip, photo_bytes, alerte_id):
         print("  ⚠️  Email sécurité non envoyé — email non configuré")
         return False
     if not peut_envoyer_alerte("pir_intrusion"):
+        print(f"  ⏳ Email PIR ignoré — cooldown actif (alerte #{alerte_id})")
         return False
 
     maintenant = datetime.now().strftime("%d/%m/%Y à %H:%M:%S")
     try:
         msg = MIMEMultipart("mixed")
-        msg["Subject"] = f"🚨 ALERTE INTRUSION — Smart Farm [{maintenant}]"
-        msg["From"]    = f"Smart Farm 🌿 <{EMAIL_EXPEDITEUR}>"
+        msg["Subject"] = f"🚨 ALERTE INTRUSION — AgroTel [{maintenant}]"
+        msg["From"]    = f"AgroTel <{EMAIL_EXPEDITEUR}>"
         msg["To"]      = ", ".join(EMAIL_DESTINATAIRES)
 
         corps_html = f"""
         <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
           <div style="background:#c0392b;padding:20px;border-radius:10px 10px 0 0;text-align:center;">
             <h1 style="color:white;margin:0;font-size:24px;">🚨 ALERTE INTRUSION DÉTECTÉE</h1>
-            <p style="color:#fadbd8;margin:8px 0 0 0;">Smart Farm — Surveillance Périmétrique</p>
+            <p style="color:#fadbd8;margin:8px 0 0 0;">AgroTel — Surveillance Périmétrique</p>
           </div>
           <div style="background:#f9f9f9;padding:24px;border-radius:0 0 10px 10px;border:1px solid #eee;">
             <p style="font-size:15px;color:#333;">
@@ -851,7 +887,7 @@ def envoyer_email_securite(cam_ip, photo_bytes, alerte_id):
             {"<p style='font-weight:bold;color:#c0392b;'>📸 Photo capturée ci-jointe</p>" if photo_bytes else "<p style='color:#999;'>⚠️ Aucune photo disponible (capture échouée)</p>"}
             <hr style="border:1px solid #eee;margin:20px 0;">
             <p style="color:#aaa;font-size:12px;text-align:center;">
-              Smart Farm — Alerte automatique — {maintenant}
+              AgroTel — Alerte automatique — {maintenant}
             </p>
           </div>
         </div>
@@ -872,8 +908,14 @@ def envoyer_email_securite(cam_ip, photo_bytes, alerte_id):
             smtp.login(EMAIL_EXPEDITEUR, EMAIL_MOT_DE_PASSE)
             smtp.sendmail(EMAIL_EXPEDITEUR, EMAIL_DESTINATAIRES, msg.as_string())
 
-        print(f"  🚨 Email sécurité envoyé (alerte #{alerte_id})")
+        print(f"  ✅ Email sécurité envoyé avec succès → {', '.join(EMAIL_DESTINATAIRES)} (alerte #{alerte_id})")
         return True
+    except smtplib.SMTPAuthenticationError:
+        print(f"  ❌ SMTP Auth échouée — vérifiez EMAIL_EXPEDITEUR et le mot de passe d'application Gmail")
+        return False
+    except smtplib.SMTPException as e:
+        print(f"  ❌ Erreur SMTP: {e}")
+        return False
     except Exception as e:
         print(f"  ❌ Erreur email sécurité: {e}")
         return False
@@ -946,7 +988,7 @@ def verifier_alertes(temp, hum, sol, ventilo, vanne, pompe):
               </tr>
             </table>
             <p style="color:#aaa;font-size:12px;text-align:center;margin-top:20px;">
-              Smart Farm — {maintenant} — Alerte automatique
+              AgroTel — {maintenant} — Alerte automatique
             </p>
           </div>
         </div>
@@ -959,11 +1001,11 @@ def tester_email():
     corps = f"""
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
       <div style="background:#1D9E75;padding:20px;border-radius:10px 10px 0 0;text-align:center;">
-        <h1 style="color:white;margin:0;">🌿 Smart Farm — Système démarré</h1>
+        <h1 style="color:white;margin:0;">🌿 AgroTel — Système démarré</h1>
       </div>
       <div style="background:#f9f9f9;padding:24px;border-radius:0 0 10px 10px;border:1px solid #eee;">
         <p style="font-size:15px;color:#333;">
-          Le serveur Smart Farm a démarré avec succès.<br>
+          Le serveur AgroTel a démarré avec succès.<br>
           Les alertes email sont maintenant <b>actives</b>.
         </p>
         <table style="width:100%;border-collapse:collapse;margin-top:16px;">
@@ -974,19 +1016,19 @@ def tester_email():
           <tr><td style="padding:8px;color:#666;">🌱 Seuil sol sec</td><td style="font-weight:bold;">{SEUIL_SOL_SEC}/1024</td></tr>
         </table>
         <p style="color:#aaa;font-size:12px;text-align:center;margin-top:20px;">
-          Smart Farm — {maintenant}
+          AgroTel — {maintenant}
         </p>
       </div>
     </div>
     """
-    envoyer_email("✅ Smart Farm — Serveur démarré", corps)
+    envoyer_email("✅ AgroTel — Serveur démarré", corps)
 
 # ══════════════════════════════════════════
 #   POINT D'ENTRÉE
 # ══════════════════════════════════════════
 if __name__ == "__main__":
     print("=" * 52)
-    print("  🌿 Smart Farm — Démarrage du serveur")
+    print("  🌿 AgroTel — Démarrage du serveur")
     print("=" * 52)
     init_db()
     if len(GROQ_API_KEY) < 10:
