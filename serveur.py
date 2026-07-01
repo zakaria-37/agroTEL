@@ -15,7 +15,7 @@ Accès :
     http://localhost:5050
 """
 
-import json, sqlite3, hashlib, os, secrets, smtplib, threading, time, base64
+import json, sqlite3, hashlib, hmac, os, secrets, smtplib, threading, time, base64
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from email.mime.text import MIMEText
@@ -30,20 +30,69 @@ except ImportError:
     print("  ⚠️  paho-mqtt non installé — lancez : pip install paho-mqtt")
 
 # ════════════════════════════════════════════
-#  ⚠️  CONFIGURATION — MODIFIEZ CES VALEURS
+#  CONFIGURATION — chargée depuis l'environnement
+#  (fichier .env local, ou vraies variables d'env en production)
+#  ⚠️  NE JAMAIS remettre de secrets en dur ici.
 # ════════════════════════════════════════════
 
-# Clé Groq — GRATUIT — obtenez la sur https://console.groq.com
-# Inscription gratuite, pas de restriction géographique
-GROQ_API_KEY = "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"
+def _charger_dotenv(chemin=".env"):
+    """Charge un fichier .env minimal (KEY=VALUE) sans dépendance externe."""
+    chemin_absolu = os.path.abspath(chemin)
+    if not os.path.exists(chemin):
+        print(f"  ⚠️  Fichier .env INTROUVABLE à cet emplacement : {chemin_absolu}")
+        print(f"      → Vérifiez que le fichier .env est bien dans le même dossier que serveur.py,")
+        print(f"      → et que le serveur est lancé depuis ce dossier (cd vers le dossier du projet).")
+        return
+    print(f"  📄 Fichier .env trouvé : {chemin_absolu}")
+    nb_cles_chargees = 0
+    with open(chemin, "r", encoding="utf-8-sig") as f:
+        for ligne in f:
+            ligne = ligne.strip()
+            if not ligne or ligne.startswith("#") or "=" not in ligne:
+                continue
+            cle, _, val = ligne.partition("=")
+            cle, val = cle.strip(), val.strip().strip('"').strip("'")
+            if cle:
+                os.environ.setdefault(cle, val)
+                nb_cles_chargees += 1
+    print(f"  ✅ {nb_cles_chargees} variable(s) chargée(s) depuis .env")
 
-# Email Gmail expéditeur
-# ⚠️ Utilisez un mot de passe d'application Gmail (pas votre vrai mot de passe)
-# Tuto: myaccount.google.com → Sécurité → Mots de passe des applications
-# APRÈS (tes vraies valeurs)
-EMAIL_EXPEDITEUR   = "myyfarm37@gmail.com"
-EMAIL_MOT_DE_PASSE = "xmec xnqk unjh ajzw"
-EMAIL_DESTINATAIRES = ["myyfarm37@gmail.com"]
+_charger_dotenv()
+
+# Clé API pour le chatbot — API Groq officielle : https://console.groq.com
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_API_URL = os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
+GROQ_MODEL_CHAT   = os.environ.get("GROQ_MODEL_CHAT", "llama-3.3-70b-versatile")
+GROQ_MODEL_VISION = os.environ.get("GROQ_MODEL_VISION", "meta-llama/llama-4-scout-17b-16e-instruct")
+
+# Email Gmail expéditeur — utilisez un "mot de passe d'application" Gmail,
+# jamais votre vrai mot de passe (myaccount.google.com → Sécurité → Mots de passe des applications)
+EMAIL_EXPEDITEUR    = os.environ.get("EMAIL_EXPEDITEUR", "")
+EMAIL_MOT_DE_PASSE  = os.environ.get("EMAIL_MOT_DE_PASSE", "")
+EMAIL_DESTINATAIRES = [e.strip() for e in os.environ.get("EMAIL_DESTINATAIRES", "").split(",") if e.strip()]
+
+# Clé secrète que l'ESP32-CAM doit envoyer pour poster une alerte PIR
+# (évite que n'importe qui sur internet puisse spammer /api/alerte-pir)
+DEVICE_API_KEY = os.environ.get("DEVICE_API_KEY", "")
+
+# Origine(s) autorisée(s) pour les requêtes CORS, séparées par une virgule.
+# En production, mettez l'URL exacte de votre site, ex: "https://monsite.com"
+ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+
+# Mot de passe admin initial. Si absent, un mot de passe aléatoire est généré
+# et affiché UNE SEULE FOIS au premier démarrage.
+ADMIN_PASSWORD_ENV = os.environ.get("ADMIN_PASSWORD", "")
+
+if not GROQ_API_KEY:
+    print("  ⚠️  GROQ_API_KEY absente de l'environnement — chatbot désactivé (voir .env.example)")
+else:
+    print(f"  🔑 GROQ_API_KEY détectée ({GROQ_API_KEY[:6]}...{GROQ_API_KEY[-4:]}, {len(GROQ_API_KEY)} caractères)")
+if not EMAIL_EXPEDITEUR or not EMAIL_MOT_DE_PASSE:
+    print("  ⚠️  Email non configuré (EMAIL_EXPEDITEUR / EMAIL_MOT_DE_PASSE absents) — alertes email désactivées")
+if not DEVICE_API_KEY:
+    print("  ⚠️  DEVICE_API_KEY absente — l'endpoint /api/alerte-pir reste OUVERT à quiconque. Définissez-la avant la mise en ligne.")
+if ALLOWED_ORIGINS == ["*"]:
+    print("  ⚠️  ALLOWED_ORIGINS='*' — à restreindre à votre domaine avant la mise en production")
 
 # Seuils d'alerte (modifiez selon vos plantes)
 SEUIL_TEMP_MAX = 35.0   # °C  alerte si température trop haute
@@ -51,6 +100,20 @@ SEUIL_TEMP_MIN = 10.0   # °C  alerte si température trop basse
 SEUIL_HUM_MAX  = 90.0   # %   alerte si humidité trop élevée
 SEUIL_HUM_MIN  = 30.0   # %   alerte si humidité trop basse
 SEUIL_SOL_SEC  = 200    # /1024  alerte sol trop sec
+
+# Seuils d'automatisation actionneurs (modifiables via la plateforme)
+seuils_auto = {
+    "fan_temp_on":   27.0,   # °C  ventilo ON si temp >= cette valeur
+    "fan_temp_off":  24.0,   # °C  ventilo OFF si temp <= cette valeur
+    "valve_sol_on":  700,    # /1024  vanne ON si sol > cette valeur
+    "valve_sol_off": 400,    # /1024  vanne OFF si sol <= cette valeur
+    "pompe_sol_on":  300,    # /1024  pompe ON si sol < cette valeur
+    "alert_temp_max":35.0,   # °C  alerte email temp haute
+    "alert_temp_min":10.0,   # °C  alerte email temp basse
+    "alert_hum_max": 90.0,   # %   alerte email humidité haute
+    "alert_hum_min": 30.0,   # %   alerte email humidité basse
+    "alert_sol_sec": 200,    # /1024 alerte email sol sec
+}
 
 # ════════════════════════════════════════════
 #  MQTT — HiveMQ broker
@@ -61,12 +124,33 @@ MQTT_CLIENT_ID = "AgroTel_Serveur"
 
 # ════════════════════════════════════════════
 
-PORT      = 5050
-DB_FILE   = "smartfarm.db"
+PORT      = int(os.environ.get("PORT", 5050))
+DB_FILE   = os.environ.get("DB_FILE", "smartfarm.db")
 HTML_FILE = "index.html"
 
-# Sessions actives en mémoire  { token -> {user_id, username, role} }
+# Sessions actives en mémoire  { token -> {user_id, username, role, cree_le} }
 sessions = {}
+SESSION_DUREE_MAX = 24 * 3600  # 24h — au-delà, le token expire et il faut se reconnecter
+
+# Anti brute-force sur /api/login  { ip -> [timestamps des échecs] }
+_login_echecs = {}
+LOGIN_MAX_ESSAIS = 5
+LOGIN_FENETRE    = 15 * 60  # 15 minutes
+
+def _login_bloque(ip):
+    maintenant = time.time()
+    essais = [t for t in _login_echecs.get(ip, []) if maintenant - t < LOGIN_FENETRE]
+    _login_echecs[ip] = essais
+    if len(essais) >= LOGIN_MAX_ESSAIS:
+        attente = int(LOGIN_FENETRE - (maintenant - essais[0]))
+        return True, max(attente, 1)
+    return False, 0
+
+def _login_echec(ip):
+    _login_echecs.setdefault(ip, []).append(time.time())
+
+def _login_reussi(ip):
+    _login_echecs.pop(ip, None)
 
 # Dernier état connu des capteurs et actionneurs (mis à jour par MQTT)
 etat_live = {
@@ -122,28 +206,102 @@ def init_db():
         )
     """)
 
+    # Table seuils automatisation — modifiables via la plateforme
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS seuils (
+            cle   TEXT PRIMARY KEY,
+            valeur REAL NOT NULL,
+            modifie_par TEXT DEFAULT 'system',
+            modifie_le  TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
+    # Insérer les seuils par défaut si la table est vide
+    cur.execute("SELECT COUNT(*) FROM seuils")
+    if cur.fetchone()[0] == 0:
+        defaults = [
+            ("fan_temp_on",    27.0,  "system"),
+            ("fan_temp_off",   24.0,  "system"),
+            ("valve_sol_on",   700.0, "system"),
+            ("valve_sol_off",  400.0, "system"),
+            ("pompe_sol_on",   300.0, "system"),
+            ("alert_temp_max", 35.0,  "system"),
+            ("alert_temp_min", 10.0,  "system"),
+            ("alert_hum_max",  90.0,  "system"),
+            ("alert_hum_min",  30.0,  "system"),
+            ("alert_sol_sec",  200.0, "system"),
+        ]
+        cur.executemany(
+            "INSERT INTO seuils (cle, valeur, modifie_par) VALUES (?,?,?)", defaults
+        )
+        print("  ✅ Seuils par défaut insérés en base")
+
     # Créer admin par défaut si base vide
     cur.execute("SELECT COUNT(*) FROM utilisateurs")
     if cur.fetchone()[0] == 0:
+        mot_de_passe_initial = ADMIN_PASSWORD_ENV or secrets.token_urlsafe(9)
         cur.execute(
             "INSERT INTO utilisateurs (username, password, role) VALUES (?,?,?)",
-            ("admin", hash_password("admin123"), "admin")
+            ("admin", hash_password(mot_de_passe_initial), "admin")
         )
-        print("  ✅ Admin créé  →  user: admin  |  pass: admin123")
+        if ADMIN_PASSWORD_ENV:
+            print("  ✅ Admin créé  →  user: admin  |  mot de passe : celui défini dans ADMIN_PASSWORD")
+        else:
+            print("  ═" * 26)
+            print(f"  ✅ Admin créé  →  user: admin  |  mot de passe : {mot_de_passe_initial}")
+            print("     ⚠️  Notez ce mot de passe maintenant, il ne sera plus jamais affiché.")
+            print("     Changez-le dès votre première connexion (menu profil).")
+            print("  ═" * 26)
 
     con.commit()
     con.close()
     print(f"  ✅ Base de données '{DB_FILE}' prête")
 
 
-def hash_password(pwd):
-    return hashlib.sha256(pwd.encode()).hexdigest()
+def hash_password(pwd, salt=None):
+    """PBKDF2-HMAC-SHA256 salé — remplace l'ancien SHA256 nu (vulnérable aux rainbow tables)."""
+    if salt is None:
+        salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", pwd.encode("utf-8"), salt.encode("utf-8"), 200_000)
+    return f"pbkdf2${salt}${digest.hex()}"
+
+
+def verifier_mot_de_passe(pwd, stored):
+    """Vérifie un mot de passe contre un hash stocké.
+    Supporte aussi l'ancien format SHA256 nu pour permettre la migration
+    transparente des comptes créés avant ce correctif (voir login)."""
+    if stored.startswith("pbkdf2$"):
+        _, salt, hexdigest = stored.split("$", 2)
+        candidat = hashlib.pbkdf2_hmac("sha256", pwd.encode("utf-8"), salt.encode("utf-8"), 200_000).hex()
+        return hmac.compare_digest(candidat, hexdigest)
+    # Ancien format hérité — sha256 nu sans sel
+    return hmac.compare_digest(hashlib.sha256(pwd.encode()).hexdigest(), stored)
 
 
 def get_db():
     con = sqlite3.connect(DB_FILE)
     con.row_factory = sqlite3.Row
     return con
+
+
+def charger_seuils():
+    """Charge les seuils depuis la base de données dans la variable globale."""
+    global seuils_auto, SEUIL_TEMP_MAX, SEUIL_TEMP_MIN, SEUIL_HUM_MAX, SEUIL_HUM_MIN, SEUIL_SOL_SEC
+    try:
+        con = get_db()
+        rows = con.execute("SELECT cle, valeur FROM seuils").fetchall()
+        con.close()
+        for row in rows:
+            seuils_auto[row["cle"]] = row["valeur"]
+        # Synchroniser les variables SEUIL_* globales
+        SEUIL_TEMP_MAX = seuils_auto["alert_temp_max"]
+        SEUIL_TEMP_MIN = seuils_auto["alert_temp_min"]
+        SEUIL_HUM_MAX  = seuils_auto["alert_hum_max"]
+        SEUIL_HUM_MIN  = seuils_auto["alert_hum_min"]
+        SEUIL_SOL_SEC  = seuils_auto["alert_sol_sec"]
+        print(f"  ✅ Seuils chargés depuis la base")
+    except Exception as e:
+        print(f"  ⚠️  Impossible de charger les seuils: {e}")
 
 
 # ══════════════════════════════════════════
@@ -266,9 +424,14 @@ class Handler(BaseHTTPRequestHandler):
         print(f"  [{datetime.now().strftime('%H:%M:%S')}] {fmt % args}")
 
     def cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin", "")
+        if ALLOWED_ORIGINS == ["*"]:
+            self.send_header("Access-Control-Allow-Origin", "*")
+        elif origin in ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Device-Key")
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -337,6 +500,16 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchall()
             con.close()
             self._json({"utilisateurs": [dict(r) for r in rows]})
+
+        # Seuils automatisation — lecture
+        elif path == "/api/seuils":
+            if not self._auth(): return
+            con = get_db()
+            rows = con.execute(
+                "SELECT cle, valeur, modifie_par, modifie_le FROM seuils ORDER BY cle"
+            ).fetchall()
+            con.close()
+            self._json({"seuils": {r["cle"]: {"valeur": r["valeur"], "modifie_par": r["modifie_par"], "modifie_le": r["modifie_le"]} for r in rows}})
 
         # Vérifier session courante
         elif path == "/api/me":
@@ -417,20 +590,58 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── LOGIN ──
         if path == "/api/login":
+            ip = self.client_address[0]
+            bloque, attente = _login_bloque(ip)
+            if bloque:
+                return self._json({"error": f"Trop de tentatives — réessayez dans {attente}s"}, 429)
+
             username = body.get("username", "").strip().lower()
             password = body.get("password", "")
             con = get_db()
             user = con.execute(
-                "SELECT * FROM utilisateurs WHERE username=? AND password=?",
-                (username, hash_password(password))
+                "SELECT * FROM utilisateurs WHERE username=?", (username,)
             ).fetchone()
-            con.close()
-            if not user:
+
+            if not user or not verifier_mot_de_passe(password, user["password"]):
+                _login_echec(ip)
+                con.close()
                 return self._json({"error": "Nom d'utilisateur ou mot de passe incorrect"}, 401)
+
+            # Migration transparente de l'ancien hash SHA256 nu vers PBKDF2 salé
+            if not user["password"].startswith("pbkdf2$"):
+                con.execute("UPDATE utilisateurs SET password=? WHERE id=?",
+                            (hash_password(password), user["id"]))
+                con.commit()
+
+            con.close()
+            _login_reussi(ip)
             token = secrets.token_hex(32)
-            sessions[token] = {"user_id": user["id"], "username": user["username"], "role": user["role"]}
+            sessions[token] = {
+                "user_id": user["id"], "username": user["username"], "role": user["role"],
+                "cree_le": time.time()
+            }
             print(f"  🔐 Connexion: {username} ({user['role']})")
             self._json({"token": token, "username": user["username"], "role": user["role"]})
+
+        # ── CHANGER SON MOT DE PASSE ──
+        elif path == "/api/change-password":
+            sess = self._auth()
+            if not sess: return
+            ancien = body.get("ancien_mdp", "")
+            nouveau = body.get("nouveau_mdp", "")
+            if len(nouveau) < 6:
+                return self._json({"error": "Nouveau mot de passe trop court (minimum 6 caractères)"}, 400)
+            con = get_db()
+            user = con.execute("SELECT * FROM utilisateurs WHERE id=?", (sess["user_id"],)).fetchone()
+            if not user or not verifier_mot_de_passe(ancien, user["password"]):
+                con.close()
+                return self._json({"error": "Ancien mot de passe incorrect"}, 401)
+            con.execute("UPDATE utilisateurs SET password=? WHERE id=?",
+                        (hash_password(nouveau), user["id"]))
+            con.commit()
+            con.close()
+            print(f"  🔑 Mot de passe changé pour {user['username']}")
+            self._json({"success": True})
 
         # ── SIGNUP (admin crée des comptes) ──
         elif path == "/api/signup":
@@ -467,6 +678,50 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "Ce nom d'utilisateur existe déjà"}, 400)
             finally:
                 con.close()
+
+        # ── MISE À JOUR SEUILS AUTOMATISATION ──
+        elif path == "/api/seuils":
+            sess = self._auth()
+            if not sess: return
+            # Seul l'admin peut modifier les seuils
+            if sess["role"] != "admin":
+                return self._json({"error": "Accès refusé — admin uniquement"}, 403)
+            cles_valides = {
+                "fan_temp_on", "fan_temp_off",
+                "valve_sol_on", "valve_sol_off",
+                "pompe_sol_on",
+                "alert_temp_max", "alert_temp_min",
+                "alert_hum_max", "alert_hum_min",
+                "alert_sol_sec"
+            }
+            erreurs = []
+            mis_a_jour = {}
+            con = get_db()
+            for cle, valeur in body.items():
+                if cle not in cles_valides:
+                    erreurs.append(f"Clé inconnue: {cle}")
+                    continue
+                try:
+                    v = float(valeur)
+                    con.execute(
+                        """INSERT INTO seuils (cle, valeur, modifie_par, modifie_le)
+                           VALUES (?,?,?,datetime('now'))
+                           ON CONFLICT(cle) DO UPDATE SET
+                             valeur=excluded.valeur,
+                             modifie_par=excluded.modifie_par,
+                             modifie_le=excluded.modifie_le""",
+                        (cle, v, sess["username"])
+                    )
+                    seuils_auto[cle] = v
+                    mis_a_jour[cle] = v
+                except (ValueError, TypeError):
+                    erreurs.append(f"Valeur invalide pour {cle}: {valeur}")
+            con.commit()
+            con.close()
+            # Resynchroniser les variables globales d'alerte
+            charger_seuils()
+            print(f"  ⚙️  Seuils mis à jour par {sess['username']}: {mis_a_jour}")
+            self._json({"success": True, "mis_a_jour": mis_a_jour, "erreurs": erreurs, "seuils_actuels": seuils_auto})
 
         # ── LOGOUT ──
         elif path == "/api/logout":
@@ -520,7 +775,12 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── ALERTE PIR ESP32-CAM ──
         elif path == "/api/alerte-pir":
-            # Pas d'auth requise — appelé directement par l'ESP32-CAM
+            # Appelé directement par l'ESP32-CAM — protégé par une clé d'appareil
+            # partagée (et non par une session utilisateur classique).
+            if DEVICE_API_KEY:
+                cle_recue = self.headers.get("X-Device-Key", "") or body.get("device_key", "")
+                if not hmac.compare_digest(cle_recue, DEVICE_API_KEY):
+                    return self._json({"error": "Clé d'appareil invalide"}, 401)
             cam_ip   = body.get("cam_ip", "inconnu")
             photo_b64 = body.get("photo", "")     # JPEG encodé en base64
             photo_bytes = None
@@ -664,10 +924,16 @@ class Handler(BaseHTTPRequestHandler):
         return self.headers.get("Authorization", "").replace("Bearer ", "").strip()
 
     def _auth(self):
-        """Vérifie le token et retourne la session ou envoie 401."""
-        sess = sessions.get(self._get_token())
+        """Vérifie le token, son expiration, et retourne la session ou envoie 401."""
+        token = self._get_token()
+        sess = sessions.get(token)
         if not sess:
             self._json({"error": "Non autorisé — veuillez vous connecter"}, 401)
+            return None
+        if time.time() - sess.get("cree_le", 0) > SESSION_DUREE_MAX:
+            sessions.pop(token, None)
+            self._json({"error": "Session expirée — veuillez vous reconnecter"}, 401)
+            return None
         return sess
 
     def _json(self, data, code=200):
@@ -680,9 +946,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _call_groq(self, system_prompt, messages):
-        """Appel API Groq — gratuit, rapide, sans restriction géographique"""
+        """Appel API Groq officielle — https://console.groq.com"""
         if len(GROQ_API_KEY) < 10:
-            return "⚠️ Clé Groq non configurée. Allez sur console.groq.com (gratuit) et collez votre clé dans serveur.py"
+            return "⚠️ Clé Groq non configurée. Allez sur console.groq.com (gratuit) et ajoutez GROQ_API_KEY dans votre fichier .env"
         try:
             msgs = [{"role": "system", "content": system_prompt}]
             for m in messages[-12:]:
@@ -690,23 +956,27 @@ class Handler(BaseHTTPRequestHandler):
                 if role == "model": role = "assistant"
                 msgs.append({"role": role, "content": m.get("content", "")})
             payload = json.dumps({
-                "model": "meta-llama/llama-3.3-70b-instruct:free",
-                "max_tokens": 800,
+                "model": GROQ_MODEL_CHAT,
+                "max_completion_tokens": 800,
                 "messages": msgs
             }).encode("utf-8")
             req = urllib.request.Request(
-                "https://openrouter.ai/api/v1/chat/completions",
+                GROQ_API_URL,
                 data=payload,
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "HTTP-Referer": "http://localhost:5050",
-                    "X-Title": "AgroTel"
+                    "User-Agent": "Mozilla/5.0 (compatible; AgroTel-Server/1.0)",
+                    "Accept": "application/json",
                 }
             )
             with urllib.request.urlopen(req, timeout=20) as r:
                 resp = json.loads(r.read())
             return resp["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode()
+            print(f"  ❌ Groq HTTP {e.code}: {err_body}")
+            return f"❌ Erreur Groq ({e.code}): {err_body}"
         except Exception as e:
             return f"❌ Erreur Groq: {str(e)}"
 
@@ -716,7 +986,7 @@ class Handler(BaseHTTPRequestHandler):
         Utilise la MÊME clé GROQ_API_KEY que Stakana — aucune configuration supplémentaire.
         """
         if len(GROQ_API_KEY) < 10:
-            return "⚠️ Clé Groq non configurée dans serveur.py"
+            return "⚠️ Clé Groq non configurée (voir .env)"
 
         prompt = f"""Tu es un expert agronome spécialisé dans les maladies des plantes.
 
@@ -749,8 +1019,8 @@ Réponds UNIQUEMENT en français avec ce format exact :
 
         try:
             payload = json.dumps({
-                "model": "meta-llama/llama-4-scout-17b-16e-instruct",
-                "max_tokens": 1024,
+                "model": GROQ_MODEL_VISION,
+                "max_completion_tokens": 1024,
                 "messages": [
                     {
                         "role": "user",
@@ -771,13 +1041,13 @@ Réponds UNIQUEMENT en français avec ce format exact :
             }).encode("utf-8")
 
             req = urllib.request.Request(
-                "https://openrouter.ai/api/v1/chat/completions",
+                GROQ_API_URL,
                 data=payload,
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "HTTP-Referer": "http://localhost:5050",
-                    "X-Title": "AgroTel"
+                    "User-Agent": "Mozilla/5.0 (compatible; AgroTel-Server/1.0)",
+                    "Accept": "application/json",
                 }
             )
             with urllib.request.urlopen(req, timeout=30) as r:
@@ -822,8 +1092,8 @@ def peut_envoyer_alerte(type_alerte):
 
 def envoyer_email(sujet, corps_html):
     """Envoie un email via Gmail SMTP."""
-    if "votre.email@gmail.com" in EMAIL_EXPEDITEUR:
-        print("  ⚠️  Email non configuré (modifiez EMAIL_EXPEDITEUR dans serveur.py)")
+    if not EMAIL_EXPEDITEUR or not EMAIL_MOT_DE_PASSE:
+        print("  ⚠️  Email non configuré (EMAIL_EXPEDITEUR / EMAIL_MOT_DE_PASSE absents de .env)")
         return False
     try:
         msg = MIMEMultipart("alternative")
@@ -845,7 +1115,7 @@ def envoyer_email(sujet, corps_html):
 
 def envoyer_email_securite(cam_ip, photo_bytes, alerte_id):
     """Envoie un email d'alerte sécurité avec la photo de l'intrus."""
-    if "votre.email@gmail.com" in EMAIL_EXPEDITEUR:
+    if not EMAIL_EXPEDITEUR or not EMAIL_MOT_DE_PASSE:
         print("  ⚠️  Email sécurité non envoyé — email non configuré")
         return False
     if not peut_envoyer_alerte("pir_intrusion"):
@@ -925,34 +1195,34 @@ def verifier_alertes(temp, hum, sol, ventilo, vanne, pompe):
     maintenant = datetime.now().strftime("%d/%m/%Y à %H:%M")
     alertes = []
 
-    if temp > SEUIL_TEMP_MAX:
+    if temp > seuils_auto["alert_temp_max"]:
         if peut_envoyer_alerte("temp_haute"):
             alertes.append(("🌡️ ALERTE — Température trop élevée", "temp_haute",
-                f"La température dans la serre est de <b>{temp}°C</b> (seuil max: {SEUIL_TEMP_MAX}°C).",
+                f"La température dans la serre est de <b>{temp}°C</b> (seuil max: {seuils_auto['alert_temp_max']}°C).",
                 "#e74c3c"))
 
-    if temp < SEUIL_TEMP_MIN:
+    if temp < seuils_auto["alert_temp_min"]:
         if peut_envoyer_alerte("temp_basse"):
             alertes.append(("❄️ ALERTE — Température trop basse", "temp_basse",
-                f"La température dans la serre est de <b>{temp}°C</b> (seuil min: {SEUIL_TEMP_MIN}°C).",
+                f"La température dans la serre est de <b>{temp}°C</b> (seuil min: {seuils_auto['alert_temp_min']}°C).",
                 "#3498db"))
 
-    if hum > SEUIL_HUM_MAX:
+    if hum > seuils_auto["alert_hum_max"]:
         if peut_envoyer_alerte("hum_haute"):
             alertes.append(("💧 ALERTE — Humidité trop élevée", "hum_haute",
-                f"L\'humidité dans la serre est de <b>{hum}%</b> (seuil max: {SEUIL_HUM_MAX}%). Risque de maladies fongiques.",
+                f"L\'humidité dans la serre est de <b>{hum}%</b> (seuil max: {seuils_auto['alert_hum_max']}%). Risque de maladies fongiques.",
                 "#9b59b6"))
 
-    if hum < SEUIL_HUM_MIN:
+    if hum < seuils_auto["alert_hum_min"]:
         if peut_envoyer_alerte("hum_basse"):
             alertes.append(("🏜️ ALERTE — Humidité trop basse", "hum_basse",
-                f"L\'humidité dans la serre est de <b>{hum}%</b> (seuil min: {SEUIL_HUM_MIN}%). Les plantes manquent d\'eau.",
+                f"L\'humidité dans la serre est de <b>{hum}%</b> (seuil min: {seuils_auto['alert_hum_min']}%). Les plantes manquent d\'eau.",
                 "#e67e22"))
 
-    if sol < SEUIL_SOL_SEC:
+    if sol < seuils_auto["alert_sol_sec"]:
         if peut_envoyer_alerte("sol_sec"):
             alertes.append(("🌱 ALERTE — Sol trop sec", "sol_sec",
-                f"L\'humidité du sol est de <b>{sol}/1024</b> (seuil sec: {SEUIL_SOL_SEC}). Arrosage nécessaire.",
+                f"L\'humidité du sol est de <b>{sol}/1024</b> (seuil sec: {seuils_auto['alert_sol_sec']}). Arrosage nécessaire.",
                 "#d35400"))
 
     for sujet, _, message, couleur in alertes:
@@ -1031,8 +1301,9 @@ if __name__ == "__main__":
     print("  🌿 AgroTel — Démarrage du serveur")
     print("=" * 52)
     init_db()
+    charger_seuils()
     if len(GROQ_API_KEY) < 10:
-        print("  ⚠️  Chatbot désactivé — ajoutez votre clé Groq dans serveur.py")
+        print("  ⚠️  Chatbot désactivé — ajoutez GROQ_API_KEY dans votre fichier .env")
         print("      → https://console.groq.com (inscription gratuite)")
     else:
         print("  ✅ Chatbot Groq AI activé (llama3-8b-8192)")
@@ -1048,11 +1319,11 @@ if __name__ == "__main__":
     print("  🛑 Arrêt     : Ctrl+C")
     print("=" * 52)
     # Envoyer email de test au démarrage (si email configuré)
-    if "votre.email@gmail.com" not in EMAIL_EXPEDITEUR:
+    if EMAIL_EXPEDITEUR and EMAIL_MOT_DE_PASSE:
         print("  📧 Envoi email de démarrage...")
         threading.Thread(target=tester_email, daemon=True).start()
     else:
-        print("  ⚠️  Emails non configurés (modifiez EMAIL_EXPEDITEUR)")
+        print("  ⚠️  Emails non configurés (voir .env.example)")
 
     server = HTTPServer(("0.0.0.0", PORT), Handler)
     try:

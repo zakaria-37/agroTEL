@@ -890,10 +890,15 @@ body.planning-fs{overflow:hidden;}
           <button class="toggle off" id="pompe-toggle" onclick="toggleRelay('pompe')"></button>
         </div>
       </div>
-      <div class="thresholds">
-        <span data-i18n="thresh_fan">Ventilo si temp</span> <span class="red">≥ 27°C</span><br>
-        <span data-i18n="thresh_valve">Vanne/Pompe si sol</span> <span class="green">&gt; 700 / 1024</span><br>
-        <span class="red">🔔 <span data-i18n="thresh_alert">Alerte temp &gt; 35°C · sol &gt; 800</span></span>
+      <div class="thresholds" id="thresholds-display">
+        <span data-i18n="thresh_fan">Ventilo si temp</span> <span class="red" id="th-show-fan-on">≥ 27°C</span><br>
+        <span data-i18n="thresh_valve">Vanne/Pompe si sol</span> <span class="green" id="th-show-valve-on">&gt; 700 / 1024</span><br>
+        <span class="red">🔔 <span id="th-show-alert">Alerte temp &gt; 35°C · sol &gt; 200</span></span>
+        <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border2);">
+          <button onclick="openSeuilsPanel()" style="width:100%;padding:6px;background:rgba(0,232,122,0.1);border:1px solid rgba(0,232,122,0.3);border-radius:8px;color:var(--green);font-family:var(--mono);font-size:10px;cursor:pointer;letter-spacing:.06em;transition:all .2s;" onmouseover="this.style.background='rgba(0,232,122,0.2)'" onmouseout="this.style.background='rgba(0,232,122,0.1)'">
+            ⚙️ CONFIGURER LES SEUILS
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -1621,6 +1626,19 @@ function clearChatHistory() {
 /* ── État global ── */
 var fanOn=false,valveOn=false,pompeOn=false;
 var fanAuto=true,valveAuto=true,pompeAuto=false;
+
+/* ── SEUILS AUTOMATISATION (chargés depuis le serveur) ── */
+var seuilFanOn    = 27.0;   // ventilo ON si temp >= cette valeur
+var seuilFanOff   = 24.0;   // ventilo OFF si temp <= cette valeur
+var seuilValveOn  = 700;    // vanne ON si sol > cette valeur
+var seuilValveOff = 400;    // vanne OFF si sol <= cette valeur
+var seuilPompeOn  = 300;    // pompe ON si sol < cette valeur
+var seuilAlertTempMax = 35.0;
+var seuilAlertTempMin = 10.0;
+var seuilAlertHumMax  = 90.0;
+var seuilAlertHumMin  = 30.0;
+var seuilAlertSolSec  = 200;
+var lastTemp = null, lastHum = null, lastSoil = null;
 var mqttClient=null;
 var histTemp=[],histHum=[],histSoil=[],histLabels=[];
 var lastTemp=0,lastHum=0,lastSoil=0;
@@ -1792,6 +1810,8 @@ function applyLogin() {
   document.getElementById('user-role-tag').textContent = currentUser.role.toUpperCase();
   document.getElementById('login-page').classList.add('hidden');
   addHistEntry('Connexion: ' + currentUser.label, 'green', 'actions');
+  // Charger les seuils depuis le serveur
+  initSeuils();
   // Afficher bouton utilisateurs si admin
   var usersBtn = document.getElementById('users-btn');
   if (usersBtn) usersBtn.style.display = currentUser.role==='admin' ? '' : 'none';
@@ -2104,18 +2124,18 @@ function renderAlertHistory(){
 
 function checkAlerts(t,h,s){
   var now=Date.now();
-  if(t>35&&now-alertCooldown.temp>30000){
+  if(t>seuilAlertTempMax&&now-alertCooldown.temp>30000){
     alertCooldown.temp=now;
-    triggerAlert('🌡️','Alerte Température','Température critique : '+t.toFixed(1)+'°C > 35°C !','#ff4757');
+    triggerAlert('🌡️','Alerte Température','Température critique : '+t.toFixed(1)+'°C > '+seuilAlertTempMax+'°C !','#ff4757');
     document.getElementById('mz-temp').classList.add('zone-alert');
-  } else if(t<=35){
+  } else if(t<=seuilAlertTempMax){
     document.getElementById('mz-temp').classList.remove('zone-alert');
   }
-  if(s>800&&now-alertCooldown.soil>30000){
+  if(s>seuilAlertSolSec*3&&now-alertCooldown.soil>30000){
     alertCooldown.soil=now;
-    triggerAlert('🌱','Alerte Sol','Humidité sol critique : '+s+' > 800 !','#ffb347');
+    triggerAlert('🌱','Alerte Sol','Humidité sol critique : '+s+' > '+(seuilAlertSolSec*3)+' !','#ffb347');
     document.getElementById('mz-soil').classList.add('zone-alert');
-  } else if(s<=800){
+  } else if(s<=seuilAlertSolSec*3){
     document.getElementById('mz-soil').classList.remove('zone-alert');
   }
 }
@@ -2468,12 +2488,13 @@ function buildSystemPrompt(){
   return 'Tu es Stakana, conseiller agronome de la serre AgroTel. Plante cultivée : '+(chatPlant||'inconnue')+'. Capteurs en temps réel : Temp='+lastTemp.toFixed(1)+'°C, Humidité='+lastHum.toFixed(1)+'%, Sol='+lastSoil+'/1024. RÈGLES ABSOLUES : 1) Réponds TOUJOURS en français. 2) Si la question est courte ou simple (oui/non, état, conseil rapide) → réponse COURTE de 1 à 3 lignes MAXIMUM. 3) Si la question demande une explication, un diagnostic ou un traitement détaillé → tu peux répondre plus longuement. 4) Ne jamais faire de liste ou énumérations inutiles pour les questions simples. 5) Pas de introduction, pas de conclusion, pas de répétition. Va droit au but.';
 }
 function sendChat(){var inp=document.getElementById('chat-input');var t=inp.value.trim();if(!t||chatTyping)return;inp.value='';inp.style.height='38px';appendUserMsg(t);showTyping();chatHistory.push({role:'user',content:t+' ['+getSensorContext()+']'});callClaude(buildSystemPrompt(),null,function(r){hideTyping();appendBotMsg(r);chatHistory.push({role:'assistant',content:r});_saveChatNow();});}
-var GROQ_KEY='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';
-var GROQ_URL='https://api.groq.com/openai/v1/chat/completions';
+/* Le chat passe désormais TOUJOURS par notre propre backend (/api/chat).
+   La clé API du fournisseur IA reste côté serveur uniquement — elle n'est
+   plus jamais exposée dans le code source visible du navigateur. */
 function callClaude(sys,one,cb){
   chatTyping=true;
   document.getElementById('chat-send-btn').disabled=true;
-  var msgs=[{role:'system',content:sys}];
+  var msgs=[];
   if(one){
     msgs.push({role:'user',content:one});
   } else {
@@ -2481,17 +2502,17 @@ function callClaude(sys,one,cb){
       msgs.push({role:m.role==='model'?'assistant':m.role,content:m.content||''});
     });
   }
-  fetch(GROQ_URL,{
+  fetch('/api/chat',{
     method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':'Bearer '+GROQ_KEY},
-    body:JSON.stringify({model:'meta-llama/llama-4-scout-17b-16e-instruct',max_tokens:300,messages:msgs})
+    headers: apiHeaders(),
+    body:JSON.stringify({system:sys,messages:msgs})
   })
   .then(function(r){
-    if(!r.ok) return r.json().then(function(e){throw new Error(JSON.stringify(e.error||e));});
+    if(!r.ok) return r.json().then(function(e){throw new Error(e.error||JSON.stringify(e));});
     return r.json();
   })
   .then(function(d){
-    var t=d.choices&&d.choices[0]?d.choices[0].message.content:'';
+    var t=(d.content&&d.content[0]&&d.content[0].text)?d.content[0].text:'';
     cb(t||'[Reponse vide]');
   })
   .catch(function(e){cb('Erreur: '+e.message);})
@@ -2694,8 +2715,8 @@ function simTick(){
   updateSensor('temp',_simT.toFixed(1));
   updateSensor('hum',_simH.toFixed(1));
   updateSensor('soil',Math.round(_simS).toString());
-  if(fanAuto){var nf=_simT>=27;if(nf!==fanOn){fanOn=nf;updateFanUI();}}
-  if(valveAuto){var nv=_simS>700;if(nv!==valveOn){valveOn=nv;updateValveUI();}}
+  if(fanAuto){var nf=lastTemp>=seuilFanOn;if(nf!==fanOn){fanOn=nf;updateFanUI();}}
+  if(valveAuto){var nv=lastSoil>seuilValveOn;if(nv!==valveOn){valveOn=nv;updateValveUI();}}
   /* ✅ Envoyer les données au serveur pour déclencher les alertes email */
   if(authToken){
     fetch(API+'/api/capteurs',{
@@ -5244,5 +5265,395 @@ function paSetResult(text, type) {
   }
 })();
 </script>
+<!-- ══════════════════════════════════════════════════
+     PANNEAU SEUILS & AUTOMATISATION
+══════════════════════════════════════════════════ -->
+<div id="seuils-overlay" onclick="if(event.target===this)closeSeuilsPanel()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:99990;backdrop-filter:blur(6px);align-items:center;justify-content:center;"></div>
+<div id="seuils-panel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:99991;width:min(640px,95vw);max-height:90vh;overflow-y:auto;background:linear-gradient(160deg,rgba(8,20,14,0.99),rgba(5,12,8,0.99));border:1px solid var(--border);border-radius:16px;box-shadow:0 0 60px rgba(0,232,122,0.15);">
+  <!-- Header -->
+  <div style="padding:18px 22px;border-bottom:1px solid var(--border2);display:flex;align-items:center;justify-content:space-between;background:linear-gradient(90deg,rgba(0,232,122,0.06),transparent);">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div style="width:40px;height:40px;background:linear-gradient(135deg,rgba(0,232,122,0.2),rgba(0,200,100,0.1));border:1px solid rgba(0,232,122,0.3);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;">⚙️</div>
+      <div>
+        <div style="font-family:var(--head);font-size:16px;font-weight:700;color:var(--text);">Seuils & Automatisation</div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--green);text-transform:uppercase;letter-spacing:.1em;margin-top:2px;">Sauvegardés en base de données</div>
+      </div>
+    </div>
+    <button onclick="closeSeuilsPanel()" style="background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:6px 12px;color:var(--text2);font-family:var(--mono);font-size:11px;cursor:pointer;">✕ Fermer</button>
+  </div>
+
+  <div style="padding:20px 22px;display:flex;flex-direction:column;gap:20px;">
+
+    <!-- Section Ventilateur -->
+    <div style="background:rgba(255,71,87,0.06);border:1px solid rgba(255,71,87,0.2);border-radius:12px;padding:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+        <span style="font-size:20px;">🌀</span>
+        <div style="font-family:var(--head);font-size:13px;font-weight:700;color:#ff4757;">Ventilateur automatique</div>
+        <div style="margin-left:auto;font-family:var(--mono);font-size:9px;color:var(--text3);">Mode: fanAuto</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="seuil-field">
+          <label class="seuil-lbl">🔴 Allumer si temp ≥</label>
+          <div class="seuil-input-wrap">
+            <input type="number" id="s-fan-on" min="15" max="50" step="0.5" class="seuil-input" oninput="previewSeuil('fan-on',this.value,'°C')">
+            <span class="seuil-unit">°C</span>
+          </div>
+          <input type="range" id="r-fan-on" min="15" max="50" step="0.5" class="seuil-range red" oninput="syncRange('fan-on',this.value)">
+        </div>
+        <div class="seuil-field">
+          <label class="seuil-lbl">🟢 Éteindre si temp ≤</label>
+          <div class="seuil-input-wrap">
+            <input type="number" id="s-fan-off" min="10" max="45" step="0.5" class="seuil-input" oninput="previewSeuil('fan-off',this.value,'°C')">
+            <span class="seuil-unit">°C</span>
+          </div>
+          <input type="range" id="r-fan-off" min="10" max="45" step="0.5" class="seuil-range green" oninput="syncRange('fan-off',this.value)">
+        </div>
+      </div>
+    </div>
+
+    <!-- Section Vanne -->
+    <div style="background:rgba(61,158,255,0.06);border:1px solid rgba(61,158,255,0.2);border-radius:12px;padding:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+        <span style="font-size:20px;">🚿</span>
+        <div style="font-family:var(--head);font-size:13px;font-weight:700;color:#3d9eff;">Électrovanne automatique</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="seuil-field">
+          <label class="seuil-lbl">🔴 Ouvrir si sol &gt;</label>
+          <div class="seuil-input-wrap">
+            <input type="number" id="s-valve-on" min="100" max="1000" step="10" class="seuil-input" oninput="previewSeuil('valve-on',this.value,'/1024')">
+            <span class="seuil-unit">/1024</span>
+          </div>
+          <input type="range" id="r-valve-on" min="100" max="1000" step="10" class="seuil-range blue" oninput="syncRange('valve-on',this.value)">
+        </div>
+        <div class="seuil-field">
+          <label class="seuil-lbl">🟢 Fermer si sol ≤</label>
+          <div class="seuil-input-wrap">
+            <input type="number" id="s-valve-off" min="50" max="800" step="10" class="seuil-input" oninput="previewSeuil('valve-off',this.value,'/1024')">
+            <span class="seuil-unit">/1024</span>
+          </div>
+          <input type="range" id="r-valve-off" min="50" max="800" step="10" class="seuil-range green" oninput="syncRange('valve-off',this.value)">
+        </div>
+      </div>
+    </div>
+
+    <!-- Section Pompe -->
+    <div style="background:rgba(255,183,71,0.06);border:1px solid rgba(255,183,71,0.2);border-radius:12px;padding:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+        <span style="font-size:20px;">⚙️</span>
+        <div style="font-family:var(--head);font-size:13px;font-weight:700;color:var(--amber);">Pompe électrique automatique</div>
+      </div>
+      <div style="max-width:50%;">
+        <div class="seuil-field">
+          <label class="seuil-lbl">🔴 Activer si sol &lt;</label>
+          <div class="seuil-input-wrap">
+            <input type="number" id="s-pompe-on" min="50" max="600" step="10" class="seuil-input" oninput="previewSeuil('pompe-on',this.value,'/1024')">
+            <span class="seuil-unit">/1024</span>
+          </div>
+          <input type="range" id="r-pompe-on" min="50" max="600" step="10" class="seuil-range amber" oninput="syncRange('pompe-on',this.value)">
+        </div>
+      </div>
+    </div>
+
+    <!-- Section Alertes Email -->
+    <div style="background:rgba(160,90,255,0.06);border:1px solid rgba(160,90,255,0.2);border-radius:12px;padding:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+        <span style="font-size:20px;">🔔</span>
+        <div style="font-family:var(--head);font-size:13px;font-weight:700;color:#a05aff;">Seuils d'alerte email</div>
+        <div style="margin-left:auto;font-family:var(--mono);font-size:9px;color:var(--text3);">Envoi automatique</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="seuil-field">
+          <label class="seuil-lbl">🌡️ Temp. max alerte</label>
+          <div class="seuil-input-wrap">
+            <input type="number" id="s-alert-temp-max" min="20" max="60" step="0.5" class="seuil-input" oninput="previewSeuil('alert-temp-max',this.value,'°C')">
+            <span class="seuil-unit">°C</span>
+          </div>
+          <input type="range" id="r-alert-temp-max" min="20" max="60" step="0.5" class="seuil-range red" oninput="syncRange('alert-temp-max',this.value)">
+        </div>
+        <div class="seuil-field">
+          <label class="seuil-lbl">❄️ Temp. min alerte</label>
+          <div class="seuil-input-wrap">
+            <input type="number" id="s-alert-temp-min" min="-10" max="25" step="0.5" class="seuil-input" oninput="previewSeuil('alert-temp-min',this.value,'°C')">
+            <span class="seuil-unit">°C</span>
+          </div>
+          <input type="range" id="r-alert-temp-min" min="-10" max="25" step="0.5" class="seuil-range blue" oninput="syncRange('alert-temp-min',this.value)">
+        </div>
+        <div class="seuil-field">
+          <label class="seuil-lbl">💧 Humidité max alerte</label>
+          <div class="seuil-input-wrap">
+            <input type="number" id="s-alert-hum-max" min="50" max="100" step="1" class="seuil-input" oninput="previewSeuil('alert-hum-max',this.value,'%')">
+            <span class="seuil-unit">%</span>
+          </div>
+          <input type="range" id="r-alert-hum-max" min="50" max="100" step="1" class="seuil-range blue" oninput="syncRange('alert-hum-max',this.value)">
+        </div>
+        <div class="seuil-field">
+          <label class="seuil-lbl">🏜️ Humidité min alerte</label>
+          <div class="seuil-input-wrap">
+            <input type="number" id="s-alert-hum-min" min="0" max="60" step="1" class="seuil-input" oninput="previewSeuil('alert-hum-min',this.value,'%')">
+            <span class="seuil-unit">%</span>
+          </div>
+          <input type="range" id="r-alert-hum-min" min="0" max="60" step="1" class="seuil-range amber" oninput="syncRange('alert-hum-min',this.value)">
+        </div>
+        <div class="seuil-field">
+          <label class="seuil-lbl">🌱 Sol sec alerte</label>
+          <div class="seuil-input-wrap">
+            <input type="number" id="s-alert-sol-sec" min="50" max="500" step="10" class="seuil-input" oninput="previewSeuil('alert-sol-sec',this.value,'/1024')">
+            <span class="seuil-unit">/1024</span>
+          </div>
+          <input type="range" id="r-alert-sol-sec" min="50" max="500" step="10" class="seuil-range green" oninput="syncRange('alert-sol-sec',this.value)">
+        </div>
+      </div>
+    </div>
+
+    <!-- Status message -->
+    <div id="seuils-status" style="display:none;padding:10px 14px;border-radius:8px;font-family:var(--mono);font-size:11px;text-align:center;"></div>
+
+    <!-- Boutons action -->
+    <div style="display:flex;gap:10px;">
+      <button onclick="saveSeuils()" style="flex:1;padding:12px;background:linear-gradient(135deg,var(--green),var(--green2));border:none;border-radius:10px;color:#fff;font-family:var(--head);font-size:14px;font-weight:700;cursor:pointer;letter-spacing:.06em;transition:all .2s;box-shadow:0 4px 16px rgba(0,232,122,0.3);" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform=''">
+        💾 SAUVEGARDER
+      </button>
+      <button onclick="resetSeuils()" style="padding:12px 18px;background:var(--bg3);border:1px solid var(--border2);border-radius:10px;color:var(--text2);font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .2s;" onmouseover="this.style.borderColor='var(--border)'" onmouseout="this.style.borderColor='var(--border2)'">
+        ↺ Réinitialiser
+      </button>
+    </div>
+
+  </div>
+</div>
+
+<!-- CSS seuils panel -->
+<style>
+.seuil-field{display:flex;flex-direction:column;gap:5px;}
+.seuil-lbl{font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;}
+.seuil-input-wrap{display:flex;align-items:center;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;overflow:hidden;transition:border-color .2s;}
+.seuil-input-wrap:focus-within{border-color:var(--green);}
+.seuil-input{flex:1;background:transparent;border:none;padding:8px 10px;font-family:var(--head);font-size:18px;font-weight:700;color:var(--text);outline:none;width:0;}
+.seuil-unit{font-family:var(--mono);font-size:10px;color:var(--text3);padding:0 10px;white-space:nowrap;}
+.seuil-range{width:100%;height:4px;border-radius:2px;outline:none;border:none;cursor:pointer;appearance:none;-webkit-appearance:none;}
+.seuil-range.red   {background:linear-gradient(90deg,rgba(255,71,87,0.4),rgba(255,71,87,0.15));}
+.seuil-range.green {background:linear-gradient(90deg,rgba(0,232,122,0.4),rgba(0,232,122,0.15));}
+.seuil-range.blue  {background:linear-gradient(90deg,rgba(61,158,255,0.4),rgba(61,158,255,0.15));}
+.seuil-range.amber {background:linear-gradient(90deg,rgba(255,183,71,0.4),rgba(255,183,71,0.15));}
+.seuil-range::-webkit-slider-thumb{appearance:none;width:16px;height:16px;border-radius:50%;background:var(--green);box-shadow:0 0 8px rgba(0,232,122,0.5);cursor:pointer;border:2px solid rgba(255,255,255,0.2);}
+</style>
+
+<!-- JS seuils panel -->
+<script>
+/* ══ GESTION DES SEUILS ══ */
+
+var seuilsMap = {
+  'fan-on':         {id:'s-fan-on',     rid:'r-fan-on',     varName:'seuilFanOn',       cle:'fan_temp_on'},
+  'fan-off':        {id:'s-fan-off',    rid:'r-fan-off',    varName:'seuilFanOff',      cle:'fan_temp_off'},
+  'valve-on':       {id:'s-valve-on',   rid:'r-valve-on',   varName:'seuilValveOn',     cle:'valve_sol_on'},
+  'valve-off':      {id:'s-valve-off',  rid:'r-valve-off',  varName:'seuilValveOff',    cle:'valve_sol_off'},
+  'pompe-on':       {id:'s-pompe-on',   rid:'r-pompe-on',   varName:'seuilPompeOn',     cle:'pompe_sol_on'},
+  'alert-temp-max': {id:'s-alert-temp-max', rid:'r-alert-temp-max', varName:'seuilAlertTempMax', cle:'alert_temp_max'},
+  'alert-temp-min': {id:'s-alert-temp-min', rid:'r-alert-temp-min', varName:'seuilAlertTempMin', cle:'alert_temp_min'},
+  'alert-hum-max':  {id:'s-alert-hum-max',  rid:'r-alert-hum-max',  varName:'seuilAlertHumMax',  cle:'alert_hum_max'},
+  'alert-hum-min':  {id:'s-alert-hum-min',  rid:'r-alert-hum-min',  varName:'seuilAlertHumMin',  cle:'alert_hum_min'},
+  'alert-sol-sec':  {id:'s-alert-sol-sec',  rid:'r-alert-sol-sec',  varName:'seuilAlertSolSec',  cle:'alert_sol_sec'},
+};
+
+function openSeuilsPanel(){
+  document.getElementById('seuils-overlay').style.display='flex';
+  document.getElementById('seuils-panel').style.display='block';
+  document.body.style.overflow='hidden';
+  loadSeuilsFromServer();
+}
+
+function closeSeuilsPanel(){
+  document.getElementById('seuils-overlay').style.display='none';
+  document.getElementById('seuils-panel').style.display='none';
+  document.body.style.overflow='';
+}
+
+function syncRange(key, val){
+  var m = seuilsMap[key]; if(!m) return;
+  document.getElementById(m.id).value = val;
+}
+
+function previewSeuil(key, val){
+  var m = seuilsMap[key]; if(!m) return;
+  document.getElementById(m.rid).value = val;
+}
+
+function fillSeuilsUI(data){
+  Object.keys(seuilsMap).forEach(function(key){
+    var m = seuilsMap[key];
+    var cle = m.cle;
+    var v = data[cle] !== undefined ? data[cle].valeur : data[cle.replace('_sol_','_').replace('_temp_','_')] ;
+    if(v === undefined && data[cle]) v = data[cle];
+    if(v !== undefined && v !== null){
+      document.getElementById(m.id).value = v;
+      document.getElementById(m.rid).value = v;
+    }
+  });
+}
+
+function loadSeuilsFromServer(){
+  if(!authToken){ fillSeuilsFromGlobals(); return; }
+  fetch(API+'/api/seuils',{headers:{'Authorization':'Bearer '+authToken}})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.seuils){
+        // Apply to global vars
+        if(d.seuils.fan_temp_on)   seuilFanOn        = d.seuils.fan_temp_on.valeur;
+        if(d.seuils.fan_temp_off)  seuilFanOff       = d.seuils.fan_temp_off.valeur;
+        if(d.seuils.valve_sol_on)  seuilValveOn      = d.seuils.valve_sol_on.valeur;
+        if(d.seuils.valve_sol_off) seuilValveOff     = d.seuils.valve_sol_off.valeur;
+        if(d.seuils.pompe_sol_on)  seuilPompeOn      = d.seuils.pompe_sol_on.valeur;
+        if(d.seuils.alert_temp_max) seuilAlertTempMax = d.seuils.alert_temp_max.valeur;
+        if(d.seuils.alert_temp_min) seuilAlertTempMin = d.seuils.alert_temp_min.valeur;
+        if(d.seuils.alert_hum_max)  seuilAlertHumMax  = d.seuils.alert_hum_max.valeur;
+        if(d.seuils.alert_hum_min)  seuilAlertHumMin  = d.seuils.alert_hum_min.valeur;
+        if(d.seuils.alert_sol_sec)  seuilAlertSolSec  = d.seuils.alert_sol_sec.valeur;
+        fillSeuilsUI(d.seuils);
+        updateSeuilsDisplay();
+      }
+    })
+    .catch(function(){ fillSeuilsFromGlobals(); });
+}
+
+function fillSeuilsFromGlobals(){
+  var defaults = {
+    'fan-on': seuilFanOn, 'fan-off': seuilFanOff,
+    'valve-on': seuilValveOn, 'valve-off': seuilValveOff,
+    'pompe-on': seuilPompeOn,
+    'alert-temp-max': seuilAlertTempMax, 'alert-temp-min': seuilAlertTempMin,
+    'alert-hum-max': seuilAlertHumMax, 'alert-hum-min': seuilAlertHumMin,
+    'alert-sol-sec': seuilAlertSolSec
+  };
+  Object.keys(defaults).forEach(function(k){
+    var m = seuilsMap[k];
+    if(m){ document.getElementById(m.id).value=defaults[k]; document.getElementById(m.rid).value=defaults[k]; }
+  });
+}
+
+function saveSeuils(){
+  var btn = document.querySelector('#seuils-panel button[onclick="saveSeuils()"]');
+  btn.textContent = '⏳ Sauvegarde...'; btn.disabled=true;
+
+  var payload = {};
+  Object.keys(seuilsMap).forEach(function(k){
+    var m = seuilsMap[k];
+    var v = parseFloat(document.getElementById(m.id).value);
+    if(!isNaN(v)) payload[m.cle] = v;
+  });
+
+  // Validation de base
+  if(payload.fan_temp_off >= payload.fan_temp_on){
+    showSeuilsStatus('⚠️ Seuil ventilo OFF doit être < seuil ON','#ff4757'); btn.textContent='💾 SAUVEGARDER'; btn.disabled=false; return;
+  }
+  if(payload.valve_sol_off >= payload.valve_sol_on){
+    showSeuilsStatus('⚠️ Seuil vanne OFF doit être < seuil ON','#ff4757'); btn.textContent='💾 SAUVEGARDER'; btn.disabled=false; return;
+  }
+
+  if(!authToken){
+    // Mode sans serveur — appliquer localement uniquement
+    applySeuilsLocally(payload);
+    showSeuilsStatus('✅ Seuils appliqués localement (serveur non connecté)','var(--amber)');
+    btn.textContent='💾 SAUVEGARDER'; btn.disabled=false; return;
+  }
+
+  fetch(API+'/api/seuils',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+authToken},
+    body:JSON.stringify(payload)
+  })
+  .then(function(r){return r.json();})
+  .then(function(d){
+    if(d.success){
+      applySeuilsLocally(payload);
+      showSeuilsStatus('✅ Seuils sauvegardés et appliqués en temps réel !','var(--green)');
+      addHistEntry('⚙️ Seuils mis à jour via la plateforme','amber','actions');
+      setTimeout(closeSeuilsPanel, 1800);
+    } else {
+      showSeuilsStatus('❌ Erreur: '+(d.error||'Inconnue'),'#ff4757');
+    }
+  })
+  .catch(function(e){
+    // Si pas de serveur, appliquer localement
+    applySeuilsLocally(payload);
+    showSeuilsStatus('✅ Appliqués localement (hors ligne)','var(--amber)');
+  })
+  .finally(function(){ btn.textContent='💾 SAUVEGARDER'; btn.disabled=false; });
+}
+
+function applySeuilsLocally(payload){
+  if(payload.fan_temp_on   !== undefined){ seuilFanOn        = payload.fan_temp_on;   }
+  if(payload.fan_temp_off  !== undefined){ seuilFanOff       = payload.fan_temp_off;  }
+  if(payload.valve_sol_on  !== undefined){ seuilValveOn      = payload.valve_sol_on;  }
+  if(payload.valve_sol_off !== undefined){ seuilValveOff     = payload.valve_sol_off; }
+  if(payload.pompe_sol_on  !== undefined){ seuilPompeOn      = payload.pompe_sol_on;  }
+  if(payload.alert_temp_max !== undefined){ seuilAlertTempMax = payload.alert_temp_max; }
+  if(payload.alert_temp_min !== undefined){ seuilAlertTempMin = payload.alert_temp_min; }
+  if(payload.alert_hum_max  !== undefined){ seuilAlertHumMax  = payload.alert_hum_max;  }
+  if(payload.alert_hum_min  !== undefined){ seuilAlertHumMin  = payload.alert_hum_min;  }
+  if(payload.alert_sol_sec  !== undefined){ seuilAlertSolSec  = payload.alert_sol_sec;  }
+  updateSeuilsDisplay();
+}
+
+function updateSeuilsDisplay(){
+  var el1 = document.getElementById('th-show-fan-on');
+  var el2 = document.getElementById('th-show-valve-on');
+  var el3 = document.getElementById('th-show-alert');
+  if(el1) el1.textContent = '≥ '+seuilFanOn+'°C';
+  if(el2) el2.textContent = '> '+seuilValveOn+' / 1024';
+  if(el3) el3.textContent = 'Alerte temp > '+seuilAlertTempMax+'°C · sol < '+seuilAlertSolSec;
+}
+
+function showSeuilsStatus(msg, color){
+  var el = document.getElementById('seuils-status');
+  el.style.display='block';
+  el.style.background = color==='var(--green)' ? 'rgba(0,232,122,0.1)' : color==='#ff4757' ? 'rgba(255,71,87,0.1)' : 'rgba(255,183,71,0.1)';
+  el.style.border = '1px solid '+(color==='var(--green)'?'rgba(0,232,122,0.3)':color==='#ff4757'?'rgba(255,71,87,0.3)':'rgba(255,183,71,0.3)');
+  el.style.color = color;
+  el.textContent = msg;
+  setTimeout(function(){ el.style.display='none'; }, 4000);
+}
+
+function resetSeuils(){
+  var defaults = {
+    fan_temp_on:27, fan_temp_off:24,
+    valve_sol_on:700, valve_sol_off:400,
+    pompe_sol_on:300,
+    alert_temp_max:35, alert_temp_min:10,
+    alert_hum_max:90, alert_hum_min:30,
+    alert_sol_sec:200
+  };
+  Object.keys(seuilsMap).forEach(function(k){
+    var m = seuilsMap[k];
+    var v = defaults[m.cle];
+    if(v!==undefined){ document.getElementById(m.id).value=v; document.getElementById(m.rid).value=v; }
+  });
+}
+
+// Charger les seuils au démarrage (après login)
+function initSeuils(){
+  if(authToken){
+    fetch(API+'/api/seuils',{headers:{'Authorization':'Bearer '+authToken}})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if(d.seuils){
+          if(d.seuils.fan_temp_on)   seuilFanOn        = d.seuils.fan_temp_on.valeur;
+          if(d.seuils.fan_temp_off)  seuilFanOff       = d.seuils.fan_temp_off.valeur;
+          if(d.seuils.valve_sol_on)  seuilValveOn      = d.seuils.valve_sol_on.valeur;
+          if(d.seuils.valve_sol_off) seuilValveOff     = d.seuils.valve_sol_off.valeur;
+          if(d.seuils.pompe_sol_on)  seuilPompeOn      = d.seuils.pompe_sol_on.valeur;
+          if(d.seuils.alert_temp_max) seuilAlertTempMax = d.seuils.alert_temp_max.valeur;
+          if(d.seuils.alert_temp_min) seuilAlertTempMin = d.seuils.alert_temp_min.valeur;
+          if(d.seuils.alert_hum_max)  seuilAlertHumMax  = d.seuils.alert_hum_max.valeur;
+          if(d.seuils.alert_hum_min)  seuilAlertHumMin  = d.seuils.alert_hum_min.valeur;
+          if(d.seuils.alert_sol_sec)  seuilAlertSolSec  = d.seuils.alert_sol_sec.valeur;
+          updateSeuilsDisplay();
+          console.log('✅ Seuils chargés depuis le serveur');
+        }
+      })
+      .catch(function(){ console.log('⚠️ Seuils: serveur non disponible, valeurs par défaut utilisées'); });
+  }
+}
+</script>
+
 </body>
 </html>
