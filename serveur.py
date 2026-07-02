@@ -966,6 +966,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.dumps({
                 "model": GROQ_MODEL_CHAT,
                 "max_completion_tokens": 800,
+                "temperature": 0.4,
                 "messages": msgs
             }).encode("utf-8")
             req = urllib.request.Request(
