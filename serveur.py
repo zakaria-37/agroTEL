@@ -126,6 +126,14 @@ MQTT_CLIENT_ID = "AgroTel_Serveur"
 
 PORT      = int(os.environ.get("PORT", 5050))
 DB_FILE   = os.environ.get("DB_FILE", "smartfarm.db")
+
+# ── Réinitialisation forcée de la base (variable d'env temporaire) ──
+if os.environ.get("RESET_DB", "").lower() == "true":
+    if os.path.exists(DB_FILE):
+        os.remove(DB_FILE)
+        print(f"  🗑️  RESET_DB=true → {DB_FILE} supprimé, la base va être recréée proprement.")
+    else:
+        print(f"  ℹ️  RESET_DB=true → aucun {DB_FILE} existant, rien à supprimer.")
 HTML_FILE = "index.html"
 
 # Sessions actives en mémoire  { token -> {user_id, username, role, cree_le} }
