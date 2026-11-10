@@ -456,6 +456,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/style.css":
             self._serve_file("style.css", "text/css; charset=utf-8")
 
+        elif path == "/ui-refresh.css":
+            self._serve_file("ui-refresh.css", "text/css; charset=utf-8")
+
         elif path == "/chat-storage.js":
             self._serve_file("chat-storage.js", "application/javascript; charset=utf-8")
 
