@@ -1,0 +1,187 @@
+/* ═══════════════════════════════════════════════════════════════
+   AgroTel — UI refresh (chargé en DERNIER, après style.css)
+   Objectifs : tableau de bord plus compact et équilibré,
+   en-tête plus clair, version mobile utilisable.
+   Le style (sombre / vert) est conservé, en plus sobre.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Effets plus sobres ─────────────────────────────────────── */
+.card:hover{box-shadow:0 6px 24px rgba(0,0,0,.35),0 0 0 1px var(--border) !important;transform:none !important;}
+.kpi-tile:hover{transform:none !important;box-shadow:0 6px 20px rgba(0,0,0,.3) !important;}
+.kpi-lbl{font-size:10px !important;color:var(--text2) !important;}
+.kpi-trend{font-size:10.5px !important;}
+
+/* ══════════════════════════════════════════════════════════════
+   EN-TÊTE — boutons homogènes, groupés, avec info-bulles
+   ══════════════════════════════════════════════════════════════ */
+.header{height:60px !important;padding:0 20px !important;gap:16px;}
+.header .logo-title{font-size:20px;line-height:1.1;}
+.header .logo-sub{font-size:9px;opacity:.8;}
+.header-right{gap:6px !important;}
+
+/* Tous les boutons-icônes : même taille, même cadre */
+.header-right > .hdr-btn,
+.header-right > button[title="Plein écran"],
+.header-right > button[title="Raccourcis clavier"]{
+  width:36px !important;height:36px !important;min-width:36px;
+  padding:0 !important;border-radius:9px !important;
+  display:inline-flex !important;align-items:center;justify-content:center;
+  background:var(--bg3) !important;border:1px solid var(--border2) !important;
+  color:var(--text2) !important;font-size:14px !important;
+  position:relative;cursor:pointer;box-sizing:border-box;
+  transition:border-color .2s,background .2s,color .2s !important;
+}
+.header-right > .hdr-btn:hover,
+.header-right > button[title="Plein écran"]:hover,
+.header-right > button[title="Raccourcis clavier"]:hover{
+  border-color:var(--border) !important;color:var(--green) !important;
+  background:var(--green-dim) !important;box-shadow:none !important;
+}
+.header-right > .hdr-btn.admin-only[style*="display:none"],
+.header-right > .hdr-btn.admin-only[style*="display: none"]{display:none !important;}
+.header-right .hdr-icon{width:17px !important;height:17px !important;}
+
+/* Séparateurs visuels entre les groupes : outils | langue/thème | compte */
+#hdr-lang-sel{margin-left:8px !important;}
+.header-right > .user-badge{margin-left:8px;height:36px;box-sizing:border-box;}
+.btn-stakana-header,.btn-logout-header{height:36px;box-sizing:border-box;border-radius:9px !important;}
+
+/* Info-bulles lisibles (reprend l'attribut title existant) */
+.header-right > [title]:not(.lang-selector)::after{
+  content:attr(title);position:absolute;top:calc(100% + 8px);left:50%;
+  transform:translateX(-50%) translateY(-4px);
+  background:var(--bg2);color:var(--text);border:1px solid var(--border);
+  font:500 11px/1.2 var(--body);letter-spacing:0;text-transform:none;
+  padding:6px 9px;border-radius:7px;white-space:nowrap;pointer-events:none;
+  opacity:0;transition:opacity .15s,transform .15s;z-index:300;
+  box-shadow:0 6px 18px rgba(0,0,0,.4);
+}
+.header-right > .hdr-btn[title]:hover::after,
+.header-right > button[title]:hover::after{opacity:1;transform:translateX(-50%) translateY(0);}
+/* Pas d'info-bulle sur les boutons qui ont déjà un libellé */
+.header-right > .btn-stakana-header::after,
+.header-right > .btn-logout-header::after{display:none !important;}
+
+/* ── Barres MQTT + météo plus fines ── */
+.mqtt-bar{padding:8px 20px !important;gap:8px !important;}
+.mqtt-bar input{height:32px;box-sizing:border-box;}
+.meteo-bar{padding:0 20px !important;}
+
+/* ══════════════════════════════════════════════════════════════
+   TABLEAU DE BORD — grille compacte
+   ══════════════════════════════════════════════════════════════ */
+.main{gap:14px !important;}
+
+/* Cartes capteurs : jauge à gauche, infos à droite (moins de vide) */
+.sensor-card{
+  display:grid !important;
+  grid-template-columns:150px 1fr;
+  grid-template-rows:auto auto 1fr;
+  column-gap:18px;align-items:center;
+  text-align:left !important;
+  padding:16px 18px !important;min-height:0 !important;
+}
+.sensor-card .gauge-wrap{grid-column:1;grid-row:1 / span 3;margin:0 !important;}
+.sensor-card .sensor-label{grid-column:2;grid-row:1;align-self:end;margin:0 0 4px !important;font-size:11px !important;letter-spacing:.14em !important;color:var(--text) !important;}
+.sensor-card .sensor-minmax{grid-column:2;grid-row:2;font-size:10.5px !important;color:var(--text2) !important;}
+.sensor-card .sensor-sparkline{grid-column:2;grid-row:3;align-self:start;margin-top:8px !important;width:100% !important;}
+.sensor-card .sensor-live-dot{position:absolute !important;top:12px;right:12px;}
+.sensor-card .sensor-minmax{width:fit-content !important;justify-content:flex-start !important;margin:0 !important;}
+.sensor-card > svg{grid-column:2;margin:4px 0 0 !important;}
+
+/* Caméras : hauteur maîtrisée, plus de grand bloc noir */
+.cam-bento{align-self:start !important;}
+.cam-bento .cam-card .cam-grid,.cam-bento .cam-grid{flex:none !important;}
+.cam-grid .cam-cell{aspect-ratio:16/9;min-height:0 !important;height:auto !important;}
+.cam-grid .cam-cell-body{height:100% !important;min-height:0 !important;}
+.act-bento{align-self:start !important;}
+
+/* ── Tablette (701–1100px) ── */
+@media (min-width:701px) and (max-width:1100px){
+  /* 12 colonnes conservées (certaines cartes forcent span 12 en style inline) */
+  .main{grid-template-columns:repeat(12,minmax(0,1fr)) !important;padding:14px !important;}
+  .kpi-strip{grid-column:span 12 !important;grid-template-columns:repeat(4,1fr) !important;}
+  .sensor-card{grid-column:span 6 !important;}
+  .sensor-card.soil{grid-column:span 12 !important;}
+  .main > *,.cam-bento,.act-bento{grid-column:span 12 !important;}
+  .header-right > .user-badge #user-name,.header-right > .user-badge .user-role-tag{display:none !important;}
+  .btn-stakana-header,.btn-logout-header{font-size:0 !important;width:36px;padding:0 !important;display:inline-flex !important;align-items:center;justify-content:center;}
+  .btn-stakana-header svg,.btn-logout-header svg{margin:0 !important;}
+}
+@media (min-width:701px) and (max-width:900px){
+  .kpi-strip{grid-template-columns:repeat(2,1fr) !important;}
+}
+
+/* ══════════════════════════════════════════════════════════════
+   MOBILE (≤700px)
+   ══════════════════════════════════════════════════════════════ */
+@media (max-width:700px){
+  /* "clip" au lieu de "hidden" : évite le défilement horizontal
+     sans casser l'en-tête collant (position:sticky) */
+  html,body{overflow-x:clip !important;}
+  body{overflow-y:visible !important;}
+
+  /* En-tête : logo lisible, actions essentielles + menu ☰ */
+  .header{height:56px !important;padding:0 12px !important;gap:8px;}
+  .header .logo{min-width:0;flex-shrink:1;}
+  .header .logo img{width:34px !important;height:34px !important;}
+  .header .logo-title{font-size:17px !important;white-space:nowrap;}
+  .header .logo-sub,.clock-widget,.status-badge,
+  .header-right > button[title="Plein écran"],
+  .header-right > button[title="Raccourcis clavier"],
+  .header-right > .user-badge,
+  .header-right > #sec-bell,
+  .header-right > .hdr-btn:not(#alert-btn):not(#carnet-btn):not(.theme-btn),
+  .header-right > .btn-stakana-header,
+  .header-right > .btn-logout-header{display:none !important;}
+  .header-right{flex-shrink:0;gap:4px !important;}
+  .header .logo,.header .logo > div{gap:8px !important;}
+  .header .logo-title{font-size:16px !important;letter-spacing:.03em !important;}
+  .header-right > .hdr-btn{width:34px !important;height:34px !important;min-width:34px;}
+  #hdr-lang-sel{margin-left:0 !important;}
+  #hdr-lang-sel .lang-btn{padding:4px 6px !important;height:34px;box-sizing:border-box;}
+  #hdr-lang-flag{display:none !important;}
+  .header-right > [title]::after{display:none !important;}
+  .mobile-menu-btn{
+    display:inline-flex !important;align-items:center;justify-content:center;
+    width:36px;height:36px;padding:0 !important;border-radius:9px !important;
+    font-size:18px !important;
+  }
+
+  /* Menu latéral : boutons plus grands, plus faciles à toucher */
+  .mobile-drawer{top:56px !important;width:min(260px,80vw) !important;}
+  .mobile-drawer-btn{padding:12px 14px !important;font-size:12px !important;}
+
+  /* Barre MQTT sur 2 lignes compactes */
+  .mqtt-bar{
+    display:grid !important;grid-template-columns:1fr 76px;
+    gap:6px !important;padding:8px 12px !important;
+  }
+  .mqtt-bar label{display:none !important;}
+  .mqtt-bar input{width:100% !important;}
+  .mqtt-bar > :not(input):not(label){grid-column:1 / -1;width:100% !important;box-sizing:border-box;text-align:center;justify-content:center;}
+  .mqtt-bar .btn-connect{padding:9px !important;}
+
+  /* Grille : une colonne */
+  .main{grid-template-columns:repeat(12,minmax(0,1fr)) !important;padding:10px !important;gap:10px !important;}
+  .main > *,.sensor-card,.cam-bento,.act-bento{grid-column:span 12 !important;}
+  .kpi-strip{grid-template-columns:1fr 1fr !important;gap:8px !important;}
+  .kpi-tile{padding:10px 12px !important;gap:10px !important;}
+  .kpi-icon{width:34px !important;height:34px !important;font-size:16px !important;}
+  .kpi-val{font-size:22px !important;}
+
+  /* Capteurs : une carte par ligne, jauge + infos côte à côte */
+  .sensor-card{grid-template-columns:118px 1fr;padding:12px 14px !important;column-gap:14px;}
+  .sensor-card .gauge-wrap{width:118px !important;height:68px !important;}
+  .sensor-card .sensor-value{font-size:24px !important;}
+
+  /* Caméras : grille 2×2 compacte */
+  .cam-grid{grid-template-columns:1fr 1fr !important;}
+  .cam-header{flex-wrap:wrap;gap:8px;}
+  .card{padding:14px !important;}
+}
+
+/* ── Thème clair : garder des contrastes corrects ── */
+[data-theme="light"] .header-right > .hdr-btn,
+[data-theme="light"] .header-right > button[title="Plein écran"],
+[data-theme="light"] .header-right > button[title="Raccourcis clavier"]{background:rgba(255,255,255,.6) !important;}
