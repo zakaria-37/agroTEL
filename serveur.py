@@ -62,8 +62,116 @@ _charger_dotenv()
 # Clé API pour le chatbot — API Groq officielle : https://console.groq.com
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_API_URL = os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
-GROQ_MODEL_CHAT   = os.environ.get("GROQ_MODEL_CHAT", "llama-3.3-70b-versatile")
-GROQ_MODEL_VISION = os.environ.get("GROQ_MODEL_VISION", "meta-llama/llama-4-scout-17b-16e-instruct")
+GROQ_MODEL_CHAT   = os.environ.get("GROQ_MODEL_CHAT", "")
+GROQ_MODEL_VISION = os.environ.get("GROQ_MODEL_VISION", "")
+
+# Groq retire régulièrement des modèles (ex. llama-3.3-70b-versatile → erreur 404).
+# On essaie donc une liste de modèles gratuits par ordre de préférence, et si aucun
+# n'existe plus, on interroge l'API /models pour prendre un modèle disponible.
+GROQ_CHAT_PREFERES = [
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "openai/gpt-oss-120b",
+    "qwen/qwen3-32b",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "openai/gpt-oss-20b",
+    "llama-3.1-8b-instant",
+]
+GROQ_VISION_PREFERES = [
+    "qwen/qwen3.8-27b",                              # accepte les images (testé nov. 2026)
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+]
+_groq_modele_actif = {"chat": None, "vision": None}   # cache du modèle qui marche
+_groq_modeles_dispo = {"liste": None, "ts": 0}
+
+
+def _groq_lister_modeles():
+    """Liste des modèles actifs du compte Groq (cache 1 h). Liste vide si échec."""
+    if _groq_modeles_dispo["liste"] is not None and time.time() - _groq_modeles_dispo["ts"] < 3600:
+        return _groq_modeles_dispo["liste"]
+    url = GROQ_API_URL.rsplit("/chat/completions", 1)[0] + "/models"
+    try:
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "User-Agent": "Mozilla/5.0 (compatible; AgroTel-Server/1.0)",
+            "Accept": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
+        ids = [m["id"] for m in data.get("data", []) if m.get("active", True)]
+    except Exception as e:
+        print(f"  ⚠️  Impossible de lister les modèles Groq : {e}")
+        ids = []
+    _groq_modeles_dispo.update(liste=ids, ts=time.time())
+    return ids
+
+
+def _groq_candidats(type_):
+    """Modèles à essayer dans l'ordre : variable d'env, modèle qui a déjà marché, préférés, puis disponibles."""
+    env = GROQ_MODEL_VISION if type_ == "vision" else GROQ_MODEL_CHAT
+    preferes = GROQ_VISION_PREFERES if type_ == "vision" else GROQ_CHAT_PREFERES
+    ordre = [m for m in [env, _groq_modele_actif[type_]] if m] + preferes
+    dispo = _groq_lister_modeles()
+    if dispo:
+        exclus = ("whisper", "tts", "guard", "orpheus", "playai", "compound", "safeguard", "distil")
+        texte = [m for m in dispo if not any(x in m.lower() for x in exclus)]
+        # vision : on essaie aussi les autres modèles (ceux sans images seront sautés)
+        ordre = [m for m in ordre if m in dispo] + texte
+    vus, resultat = set(), []
+    for m in ordre:
+        if m not in vus:
+            vus.add(m); resultat.append(m)
+    return resultat
+
+
+def _groq_post(payload_dict, type_, timeout):
+    """POST chat/completions en essayant les modèles candidats ; renvoie (réponse JSON, modèle)."""
+    derniere_erreur = None
+    for modele in _groq_candidats(type_):
+        payload = dict(payload_dict, model=modele)
+        if modele.startswith("openai/gpt-oss"):
+            # modèles « raisonnement » : garder de la place pour la réponse finale
+            payload["max_completion_tokens"] = max(payload.get("max_completion_tokens", 800), 2048)
+            payload["reasoning_effort"] = "low"
+        req = urllib.request.Request(
+            GROQ_API_URL,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "User-Agent": "Mozilla/5.0 (compatible; AgroTel-Server/1.0)",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                resp = json.loads(r.read())
+            if _groq_modele_actif[type_] != modele:
+                print(f"  ✅ Groq ({type_}) : modèle utilisé → {modele}")
+            _groq_modele_actif[type_] = modele
+            return resp, modele
+        except urllib.error.HTTPError as e:
+            corps = e.read().decode(errors="replace")
+            derniere_erreur = (e.code, corps)
+            modele_absent = e.code in (400, 404) and any(
+                k in corps for k in ("model_not_found", "model_decommissioned", "does not exist", "decommissioned"))
+            sans_images = type_ == "vision" and e.code == 400 and (
+                "must be a string" in corps or "image" in corps.lower())
+            if modele_absent or sans_images:
+                print(f"  ⚠️  Modèle Groq inutilisable ici : {modele} — essai du suivant")
+                if _groq_modele_actif[type_] == modele:
+                    _groq_modele_actif[type_] = None
+                continue
+            # corps déjà lu : on le transmet dans msg pour l'affichage
+            raise urllib.error.HTTPError(GROQ_API_URL, e.code, corps, None, None)
+    code, corps = derniere_erreur or (0, "aucun modèle Groq disponible")
+    raise urllib.error.HTTPError(GROQ_API_URL, code or 404, corps, None, None)
+
+
+def _nettoyer_reponse_ia(texte):
+    """Retire les blocs de réflexion <think>…</think> que certains modèles ajoutent."""
+    import re as _re
+    return _re.sub(r"<think>.*?</think>", "", texte or "", flags=_re.S).strip()
 
 # Email Gmail expéditeur — utilisez un "mot de passe d'application" Gmail,
 # jamais votre vrai mot de passe (myaccount.google.com → Sécurité → Mots de passe des applications)
@@ -966,31 +1074,24 @@ class Handler(BaseHTTPRequestHandler):
                 role = m.get("role", "user")
                 if role == "model": role = "assistant"
                 msgs.append({"role": role, "content": m.get("content", "")})
-            payload = json.dumps({
-                "model": GROQ_MODEL_CHAT,
+            resp, _ = _groq_post({
                 "max_completion_tokens": 800,
                 "temperature": 0.4,
                 "messages": msgs
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                GROQ_API_URL,
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "User-Agent": "Mozilla/5.0 (compatible; AgroTel-Server/1.0)",
-                    "Accept": "application/json",
-                }
-            )
-            with urllib.request.urlopen(req, timeout=20) as r:
-                resp = json.loads(r.read())
-            return resp["choices"][0]["message"]["content"]
+            }, "chat", timeout=30)
+            reponse = _nettoyer_reponse_ia(resp["choices"][0]["message"].get("content"))
+            return reponse or "🤔 Je n'ai pas pu formuler de réponse, pouvez-vous reformuler ?"
         except urllib.error.HTTPError as e:
-            err_body = e.read().decode()
+            err_body = e.read().decode(errors="replace") if hasattr(e, "read") and e.fp else str(e.msg)
             print(f"  ❌ Groq HTTP {e.code}: {err_body}")
-            return f"❌ Erreur Groq ({e.code}): {err_body}"
+            if e.code == 429:
+                return "⏳ Stakana est très sollicité en ce moment (limite gratuite atteinte). Réessayez dans une minute."
+            if e.code in (401, 403):
+                return "🔑 La clé Groq est refusée. Vérifiez GROQ_API_KEY sur Render."
+            return f"❌ Stakana est momentanément indisponible (erreur {e.code}). Réessayez plus tard."
         except Exception as e:
-            return f"❌ Erreur Groq: {str(e)}"
+            print(f"  ❌ Groq: {e}")
+            return "❌ Stakana est momentanément indisponible. Réessayez plus tard."
 
     def _analyser_plante_vision(self, photo_b64, plante, temp, hum, sol):
         """
@@ -1030,8 +1131,7 @@ Réponds UNIQUEMENT en français avec ce format exact :
 📅 URGENCE : [Immédiate / Dans 24h / Dans 1 semaine / Aucune]"""
 
         try:
-            payload = json.dumps({
-                "model": GROQ_MODEL_VISION,
+            payload_vision = {
                 "max_completion_tokens": 1024,
                 "messages": [
                     {
@@ -1050,28 +1150,19 @@ Réponds UNIQUEMENT en français avec ce format exact :
                         ]
                     }
                 ]
-            }).encode("utf-8")
+            }
 
-            req = urllib.request.Request(
-                GROQ_API_URL,
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "User-Agent": "Mozilla/5.0 (compatible; AgroTel-Server/1.0)",
-                    "Accept": "application/json",
-                }
-            )
-            with urllib.request.urlopen(req, timeout=30) as r:
-                resp = json.loads(r.read())
-            result = resp["choices"][0]["message"]["content"]
+            resp, _ = _groq_post(payload_vision, "vision", timeout=40)
+            result = _nettoyer_reponse_ia(resp["choices"][0]["message"].get("content"))
             print(f"  ✅ Analyse Groq Vision terminée pour {plante}")
-            return result
+            return result or "🤔 L'analyse n'a rien donné, essayez avec une photo plus nette."
 
         except urllib.error.HTTPError as e:
-            err_body = e.read().decode()
+            err_body = e.read().decode(errors="replace") if hasattr(e, "read") and e.fp else str(e.msg)
             print(f"  ❌ Groq Vision HTTP {e.code}: {err_body}")
-            return f"❌ Erreur Groq Vision ({e.code}): {err_body}"
+            if e.code == 429:
+                return "⏳ Limite gratuite de l'analyse photo atteinte. Réessayez dans une minute."
+            return f"❌ Analyse photo momentanément indisponible (erreur {e.code}). Réessayez plus tard."
         except Exception as e:
             print(f"  ❌ Erreur Vision: {e}")
             return f"❌ Erreur analyse: {str(e)}"
@@ -1318,7 +1409,7 @@ if __name__ == "__main__":
         print("  ⚠️  Chatbot désactivé — ajoutez GROQ_API_KEY dans votre fichier .env")
         print("      → https://console.groq.com (inscription gratuite)")
     else:
-        print("  ✅ Chatbot Groq AI activé (llama3-8b-8192)")
+        print("  ✅ Chatbot Groq AI activé (modèle gratuit choisi automatiquement)")
 
     # ── Démarrage client MQTT ──
     if MQTT_DISPONIBLE:
