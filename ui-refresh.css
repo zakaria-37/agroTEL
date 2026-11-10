@@ -154,11 +154,11 @@
 
   /* Barre MQTT sur 2 lignes compactes */
   .mqtt-bar{
-    display:grid !important;grid-template-columns:1fr 76px;
+    display:grid !important;grid-template-columns:minmax(0,1fr) 84px;
     gap:6px !important;padding:8px 12px !important;
   }
   .mqtt-bar label{display:none !important;}
-  .mqtt-bar input{width:100% !important;}
+  .mqtt-bar input{width:100% !important;min-width:0 !important;}
   .mqtt-bar > :not(input):not(label){grid-column:1 / -1;width:100% !important;box-sizing:border-box;text-align:center;justify-content:center;}
   .mqtt-bar .btn-connect{padding:9px !important;}
 
@@ -185,3 +185,71 @@
 [data-theme="light"] .header-right > .hdr-btn,
 [data-theme="light"] .header-right > button[title="Plein écran"],
 [data-theme="light"] .header-right > button[title="Raccourcis clavier"]{background:rgba(255,255,255,.6) !important;}
+
+/* ══════════════════════════════════════════════════════════════
+   iPHONE (13 Pro Max : 428×926) — Safari iOS
+   ══════════════════════════════════════════════════════════════ */
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%;}
+body{-webkit-tap-highlight-color:rgba(0,232,122,.15);}
+
+/* Flou des panneaux : Safari iOS < 18 exige le préfixe -webkit- */
+.header,.mqtt-bar{-webkit-backdrop-filter:blur(20px);}
+.card,.kpi-tile,.cam-card{-webkit-backdrop-filter:blur(14px);}
+.chat-window,.mobile-drawer,.alert-panel,.hist-panel{-webkit-backdrop-filter:blur(16px);}
+
+/* Encoche / Dynamic Island et barre d'accueil (viewport-fit=cover) */
+.header{
+  padding-left:max(20px,env(safe-area-inset-left)) !important;
+  padding-right:max(20px,env(safe-area-inset-right)) !important;
+  padding-top:env(safe-area-inset-top) !important;
+  height:calc(60px + env(safe-area-inset-top)) !important;
+}
+.main,.mqtt-bar,.meteo-bar{
+  padding-left:max(10px,env(safe-area-inset-left)) !important;
+  padding-right:max(10px,env(safe-area-inset-right)) !important;
+}
+.main{padding-bottom:calc(90px + env(safe-area-inset-bottom)) !important;}
+.chat-fab{
+  bottom:calc(20px + env(safe-area-inset-bottom)) !important;
+  right:calc(16px + env(safe-area-inset-right)) !important;
+}
+
+/* Safari iOS zoome la page si un champ fait moins de 16px : on l'évite */
+@supports (-webkit-touch-callout:none){
+  input,select,textarea,.chat-input{font-size:16px !important;}
+}
+
+/* Pas d'effet de survol « collé » au doigt sur écran tactile */
+@media (hover:none){
+  .card:hover,.kpi-tile:hover,.cam-card:hover{transform:none !important;box-shadow:none !important;}
+}
+
+@media (max-width:700px){
+  .header{
+    height:calc(56px + env(safe-area-inset-top)) !important;
+    padding-left:max(12px,env(safe-area-inset-left)) !important;
+    padding-right:max(12px,env(safe-area-inset-right)) !important;
+  }
+  .mobile-drawer{top:calc(56px + env(safe-area-inset-top)) !important;padding-bottom:calc(12px + env(safe-area-inset-bottom)) !important;}
+  .hist-panel,#securite-panel,#users-panel{
+    top:calc(56px + env(safe-area-inset-top)) !important;
+    height:calc(100dvh - 56px - env(safe-area-inset-top)) !important;
+  }
+
+  /* Stakana en plein écran, qui suit le clavier iOS (--vvh calculé en JS) */
+  .chat-window{
+    left:0 !important;right:0 !important;bottom:auto !important;
+    top:calc(var(--vvtop,0px) + env(safe-area-inset-top)) !important;
+    width:100% !important;max-width:none !important;max-height:none !important;
+    height:calc(var(--vvh,100dvh) - env(safe-area-inset-top)) !important;
+    border-radius:0 !important;border-left:none !important;border-right:none !important;
+    padding-bottom:env(safe-area-inset-bottom);box-sizing:border-box;
+    z-index:10050 !important;
+  }
+  .chat-window .chat-head{padding-top:12px;}
+  .chat-window .chat-input-row{padding-bottom:max(10px,env(safe-area-inset-bottom)) !important;}
+  .chat-msgs{-webkit-overflow-scrolling:touch;overscroll-behavior:contain;}
+
+  /* Cibles tactiles d'au moins 44px (recommandation Apple) */
+  .mobile-drawer-btn{min-height:44px;}
+}
