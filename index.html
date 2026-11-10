@@ -308,6 +308,7 @@ body.planning-fs{overflow:hidden;}
 }
 </style>
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<link rel="stylesheet" href="ui-refresh.css">
 </head>
 <body>
 
@@ -506,11 +507,9 @@ body.planning-fs{overflow:hidden;}
       <div class="clock-date" id="clock-date">-- --- ----</div>
       <div class="clock-time" id="clock">--:--:--</div>
     </div>
-  </div>
-</div>
 
     <!-- Bouton menu mobile (hamburger) — visible seulement sur mobile -->
-    <button class="mobile-menu-btn" id="mobile-menu-btn" onclick="toggleMobileMenu()" title="Menu">☰</button>
+    <button class="mobile-menu-btn" id="mobile-menu-btn" onclick="toggleMobileMenu()" title="Menu" aria-label="Menu">☰</button>
   </div>
 </div>
 
@@ -2632,7 +2631,8 @@ document.addEventListener('DOMContentLoaded',function(){
   // Fermer panel alertes si clic dehors
   document.addEventListener('click',function(e){
     var panel=document.getElementById('alert-panel');
-    var bell=document.querySelector('.notif-bell');
+    var bell=document.getElementById('alert-btn');
+    if(!panel||!bell) return;
     if(!panel.contains(e.target)&&!bell.contains(e.target)) panel.classList.remove('open');
   });
 });
